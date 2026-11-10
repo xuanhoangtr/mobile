@@ -1,35 +1,146 @@
-# Gradle files
-.gradle/
-build/
-.kotlin/
 
-# Local configuration file (sdk path, etc)
-local.properties
+# ============================================================
+# ANDROID CHAT APP - ROOT .gitignore
+# Android: Kotlin + Jetpack Compose
+# Backend: Kotlin + Ktor
+# Database: PostgreSQL
+# ============================================================
 
-# Log/OS Files
-*.log
 
-# Android Studio generated files and folders
-captures/
-.externalNativeBuild/
-.cxx/
-*.aab
-*.apk
-output-metadata.json
+# ============================================================
+# 1. ANDROID / GRADLE BUILD
+# ============================================================
 
-# IntelliJ
+**/.gradle/
+**/build/
+**/out/
+**/local.properties
+**/.cxx/
+**/captures/
+**/externalNativeBuild/
+
 *.iml
-.idea/
-misc.xml
-deploymentTargetDropDown.xml
-render.experimental.xml
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
 
-# Keystore files
+
+# ============================================================
+# 2. ANDROID STUDIO / INTELLIJ IDEA
+# ============================================================
+
+**/.idea/
+*.iws
+*.ipr
+
+# Kotlin / Java caches
+**/.kotlin/
+*.hprof
+*.hprof-failures
+
+
+# ============================================================
+# 3. BACKEND - KTOR
+# ============================================================
+
+# Backend runtime data
+/backend/uploads/
+/backend/storage/
+/backend/tmp/
+/backend/temp/
+/backend/logs/
+
+# Local databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Runtime logs
+*.log
+logs/
+
+
+# ============================================================
+# 4. ENVIRONMENT VARIABLES / SECRETS
+# ============================================================
+
+.env
+.env.*
+!.env.example
+
 *.jks
 *.keystore
+*.p12
+*.pfx
+*.pem
+*.key
 
-# Google Services (e.g. APIs or Firebase)
-google-services.json
+keystore.properties
+key.properties
 
-# Android Profiling
-*.hprof
+secrets.properties
+credentials.json
+service-account*.json
+google-services.local.json
+
+
+# ============================================================
+# 5. REFERENCE REPOSITORIES
+# ============================================================
+
+# Local-only external source repositories
+/reference-repos/
+
+
+# ============================================================
+# 6. TEMPORARY / SYSTEM FILES
+# ============================================================
+
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+
+# Editor settings
+.vscode/
+
+
+# ============================================================
+# 7. TEST / COVERAGE OUTPUT
+# ============================================================
+
+**/test-results/
+**/reports/
+**/coverage/
+**/jacoco/
+
+
+# ============================================================
+# 8. IMPORTANT FILES TO KEEP IN GIT
+# ============================================================
+
+# DO NOT IGNORE:
+#
+# AGENTS.md
+# README.md
+# rubric_vn.pdf
+# ke_hoach_40_ngay_android_chat_kotlin.md
+# android-app/gradlew
+# android-app/gradlew.bat
+# android-app/gradle/wrapper/gradle-wrapper.jar
+# android-app/gradle/wrapper/gradle-wrapper.properties
+# android-app/build.gradle.kts
+# android-app/settings.gradle.kts
+# android-app/gradle/libs.versions.toml
+# backend source code
+# Android source code
+# Database migration files
