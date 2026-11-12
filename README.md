@@ -76,3 +76,14 @@ Việc sử dụng công cụ AI phải được khai báo
 trong README hoặc báo cáo theo rubric.
 Mỗi thành viên chịu trách nhiệm hiểu và giải thích
 mã nguồn mình đóng góp.
+
+## 9. MEDIA foundation D01–D05 (dev-only, DRAFT)
+
+Đã thêm module MEDIA độc lập cho SAF picker/preview/state/repository interface trên Android
+và upload streaming/owner-only download trong backend Ktor hiện tại.
+API thử nghiệm mặc định tắt; chưa nối root navigation, AUTH network adapter hoặc CHAT message.
+Xem [phạm vi, cách bật local, API đề xuất, ACL và giới hạn](docs/media-foundation.md).
+
+Source MEDIA Android/backend, MEDIA tests và tài liệu foundation được xây dựng với hỗ trợ
+Codex trong task MEDIA D01–D05. Đây chưa phải MEDIA production-ready hoặc demo hai máy.
+Chi tiết AI disclosure và các phụ thuộc cần nhóm duyệt nằm trong tài liệu trên.

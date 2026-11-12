@@ -28,6 +28,7 @@ import vn.edu.hcmute.androidchat.backend.common.DatabaseManager
 import vn.edu.hcmute.androidchat.backend.common.HealthResponse
 import vn.edu.hcmute.androidchat.backend.common.configureJwtAuth
 import vn.edu.hcmute.androidchat.backend.groups.registerGroupRoutes
+import vn.edu.hcmute.androidchat.backend.media.configureMediaFoundation
 import java.time.Instant
 import kotlin.time.Duration.Companion.seconds
 
@@ -77,6 +78,7 @@ fun Application.module(config: AppConfig = AppConfig.fromEnv()) {
     }
 
     configureJwtAuth(config)
+    configureMediaFoundation(config)
 
     routing {
         get("/health") {
