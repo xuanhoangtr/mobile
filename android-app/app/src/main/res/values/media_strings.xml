@@ -38,4 +38,5 @@
     <string name="media_error_upload">Upload failed. Retry when the service is available.</string>
     <string name="media_error_blocked">Upload service is not connected. AUTH/API integration is pending.</string>
     <string name="media_error_preview">Preview is unavailable for this file. You can still upload it.</string>
+    <string name="media_error_picker_unavailable">The system picker could not be opened. Check that a picker app is available and try again.</string>
 </resources>

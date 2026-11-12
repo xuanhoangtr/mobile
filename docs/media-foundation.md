@@ -21,7 +21,9 @@ Không báo upload PASS thành ảnh đã tới máy người nhận. Android kh
 
 `feature/media/` gồm model, data/source/repository/service interface, ViewModel và UI độc lập.
 UI là **temporary Material 3**, chưa xác minh màn picker/preview/upload/voice/call trong Stitch.
-Không có Activity/entrypoint mới; root navigation/MainActivity và CHAT giữ nguyên.
+Root navigation/MainActivity và CHAT giữ nguyên. D05 thêm `MediaDebugActivity` trong Android `src/debug/` cùng debug manifest; đây là launcher thứ hai chỉ có trong debug APK, không tham gia release. Activity dùng `AndroidMediaSource` thật và `StreamMediaRepository` với `UnconfiguredMediaUploadService` mặc định, nên upload sẽ hiện lỗi tích hợp bị chặn, không giả thành công.
+
+Để thử trên emulator, cài/chạy cấu hình `debug` trong Android Studio rồi mở launcher `MEDIA test (debug)`. Có thể gọi trực tiếp bằng `adb shell am start -n vn.edu.hcmute.androidchat/.feature.media.debug.MediaDebugActivity`. Chọn file mở Android system picker; `Mở tệp` dùng app viewer ngoài nếu có. Kiểm thử thiết bị thực tế cần báo riêng, không được suy ra từ build/unit test.
 
 | Nhu cầu | API/quyền |
 |---|---|

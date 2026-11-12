@@ -12,7 +12,7 @@ data class SelectedMedia(
 data class UploadedMedia(val mediaId: Long, val mimeType: String, val byteSize: Long)
 
 enum class MediaPhase { EMPTY, SELECTING, SELECTED, UPLOADING, UPLOADED, CANCELLED, ERROR }
-enum class MediaError { URI_ACCESS, UNSUPPORTED_TYPE, TOO_LARGE, EMPTY_FILE, UPLOAD_FAILED, INTEGRATION_BLOCKED, PREVIEW_FAILED }
+enum class MediaError { URI_ACCESS, UNSUPPORTED_TYPE, TOO_LARGE, EMPTY_FILE, UPLOAD_FAILED, INTEGRATION_BLOCKED, PREVIEW_FAILED, PICKER_UNAVAILABLE }
 
 data class MediaUiState(
     val selected: SelectedMedia? = null,

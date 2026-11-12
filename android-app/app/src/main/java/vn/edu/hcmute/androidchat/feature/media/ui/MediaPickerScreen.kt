@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.text.format.Formatter
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -79,7 +80,10 @@ private enum class MediaPickerKind { PHOTO, VIDEO, DOCUMENT }
 fun MediaPickerScreen(viewModel: MediaViewModel, modifier: Modifier = Modifier) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+    val visualPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        viewModel.onPickerResult(uri?.toString())
+    }
+    val documentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         viewModel.onPickerResult(uri?.toString())
     }
 
@@ -87,15 +91,22 @@ fun MediaPickerScreen(viewModel: MediaViewModel, modifier: Modifier = Modifier) 
         state = state,
         onChooseClick = { kind ->
             viewModel.pickerOpened()
-            val types = when (kind) {
-                MediaPickerKind.PHOTO -> arrayOf("image/jpeg", "image/png")
-                MediaPickerKind.VIDEO -> arrayOf("video/mp4")
-                MediaPickerKind.DOCUMENT -> arrayOf("application/pdf", "text/plain")
-            }
             try {
-                picker.launch(types)
+                when (kind) {
+                    MediaPickerKind.PHOTO -> visualPicker.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                    )
+                    MediaPickerKind.VIDEO -> visualPicker.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                    )
+                    MediaPickerKind.DOCUMENT -> documentPicker.launch(
+                        arrayOf("application/pdf", "text/plain")
+                    )
+                }
             } catch (_: ActivityNotFoundException) {
-                viewModel.onPickerResult(null)
+                viewModel.pickerLaunchFailed()
+            } catch (_: SecurityException) {
+                viewModel.pickerLaunchFailed()
             }
         },
         onUploadClick = viewModel::upload,
@@ -213,6 +224,7 @@ private fun MediaPickerContent(
                     enabled = !busy,
                     onChooseClick = onChooseClick
                 )
+                state.error?.let { error -> MediaErrorNotice(error) }
             } else {
                 SelectedMediaContent(
                     state = state,
@@ -426,18 +438,23 @@ private fun SelectedMediaContent(
             else -> Unit
         }
         state.error?.let { error ->
-            Surface(
-                color = Color(0xFFFFEDEA),
-                shape = RoundedCornerShape(14.dp)
-            ) {
-                Text(
-                    text = stringResource(errorString(error)),
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                    color = ChatStitchTokens.AlertRed,
-                    fontSize = 13.sp
-                )
-            }
+            MediaErrorNotice(error)
         }
+    }
+}
+
+@Composable
+private fun MediaErrorNotice(error: MediaError) {
+    Surface(
+        color = Color(0xFFFFEDEA),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Text(
+            text = stringResource(errorString(error)),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            color = ChatStitchTokens.AlertRed,
+            fontSize = 13.sp
+        )
     }
 }
 
@@ -780,4 +797,5 @@ private fun errorString(error: MediaError): Int = when (error) {
     MediaError.UPLOAD_FAILED -> R.string.media_error_upload
     MediaError.INTEGRATION_BLOCKED -> R.string.media_error_blocked
     MediaError.PREVIEW_FAILED -> R.string.media_error_preview
+    MediaError.PICKER_UNAVAILABLE -> R.string.media_error_picker_unavailable
 }

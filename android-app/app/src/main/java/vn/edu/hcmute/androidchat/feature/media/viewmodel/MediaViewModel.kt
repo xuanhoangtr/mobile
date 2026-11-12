@@ -17,6 +17,15 @@ class MediaViewModel(private val repository: MediaRepository) : ViewModel() {
 
     fun pickerOpened() { if (state.value.phase != MediaPhase.UPLOADING) state.update { it.copy(phase = MediaPhase.SELECTING, error = null) } }
 
+    fun pickerLaunchFailed() {
+        state.update {
+            it.copy(
+                phase = if (it.selected == null) MediaPhase.ERROR else MediaPhase.SELECTED,
+                error = MediaError.PICKER_UNAVAILABLE
+            )
+        }
+    }
+
     fun onPickerResult(uri: String?) {
         if (uri == null) {
             state.update { it.copy(phase = when {

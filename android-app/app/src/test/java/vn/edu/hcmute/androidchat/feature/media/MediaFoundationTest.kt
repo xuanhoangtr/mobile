@@ -33,6 +33,16 @@ class MediaFoundationTest {
         assertNull(vm.uiState.value.selected)
     }
 
+    @Test fun pickerLaunchFailureIsDistinctFromUserCancellation() = runTest(dispatcher) {
+        val vm = MediaViewModel(FakeRepository())
+        vm.pickerOpened()
+        vm.pickerLaunchFailed()
+
+        assertEquals(MediaPhase.ERROR, vm.uiState.value.phase)
+        assertEquals(MediaError.PICKER_UNAVAILABLE, vm.uiState.value.error)
+        assertNull(vm.uiState.value.selected)
+    }
+
     @Test fun cancelStopsUploadAndRetryUsesSameSelection() = runTest(dispatcher) {
         val repo = FakeRepository()
         val vm = MediaViewModel(repo)
@@ -196,6 +206,9 @@ class MediaFoundationTest {
     @Test fun policyRejectsWrongMimeKnownSizeAndEmptyFile() = runTest(dispatcher) {
         for ((media, reason) in listOf(
             selected.copy(mimeType = "text/html") to MediaError.UNSUPPORTED_TYPE,
+            selected.copy(mimeType = "image/heic") to MediaError.UNSUPPORTED_TYPE,
+            selected.copy(mimeType = "image/webp") to MediaError.UNSUPPORTED_TYPE,
+            selected.copy(mimeType = "video/3gpp") to MediaError.UNSUPPORTED_TYPE,
             selected.copy(byteSize = MediaSelectionPolicy.MAX_BYTES + 1) to MediaError.TOO_LARGE,
             selected.copy(byteSize = 0) to MediaError.EMPTY_FILE
         )) {
