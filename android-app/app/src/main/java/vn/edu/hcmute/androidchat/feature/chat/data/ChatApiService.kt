@@ -111,6 +111,43 @@ interface ChatApiService {
         messageId: Long,
         emoji: String
     ): Result<Map<String, Int>>
+
+    suspend fun searchMessages(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long?,
+        query: String,
+        currentUserId: Long,
+        cursor: String? = null,
+        limit: Int = 20
+    ): Result<CursorPageResult<MessageUiModel>>
+
+    suspend fun setConversationPinned(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long,
+        pinned: Boolean
+    ): Result<ConversationUiModel>
+
+    suspend fun listPinnedMessageIds(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long
+    ): Result<List<Long>>
+
+    suspend fun pinMessage(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long,
+        messageId: Long
+    ): Result<Unit>
+
+    suspend fun unpinMessage(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long,
+        messageId: Long
+    ): Result<Unit>
 }
 
 object ChatRestParser {
@@ -476,6 +513,107 @@ class OkHttpChatApiService(
                     put(k, countsObj.optInt(k, 0))
                 }
             }
+        }
+    }
+
+    override suspend fun searchMessages(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long?,
+        query: String,
+        currentUserId: Long,
+        cursor: String?,
+        limit: Int
+    ): Result<CursorPageResult<MessageUiModel>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanBase = baseUrl.trimEnd('/')
+            val encodedQuery = java.net.URLEncoder.encode(query, "UTF-8")
+            val url = buildString {
+                append("$cleanBase/messages/search?q=$encodedQuery&limit=${limit.coerceIn(1, 100)}")
+                if (conversationId != null) append("&conversationId=$conversationId")
+                if (!cursor.isNullOrBlank()) append("&cursor=$cursor")
+            }
+            val request = Request.Builder()
+                .url(url)
+                .header("Authorization", "Bearer $accessToken")
+                .get()
+                .build()
+            ChatRestParser.parseMessagesPage(executeRequest(request), currentUserId)
+        }
+    }
+
+    override suspend fun setConversationPinned(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long,
+        pinned: Boolean
+    ): Result<ConversationUiModel> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanBase = baseUrl.trimEnd('/')
+            val payload = JSONObject().put("pinned", pinned).toString()
+            val request = Request.Builder()
+                .url("$cleanBase/conversations/$conversationId/pin")
+                .header("Authorization", "Bearer $accessToken")
+                .patch(payload.toRequestBody(jsonMediaType))
+                .build()
+            ChatRestParser.parseConversationSummary(JSONObject(executeRequest(request)))
+        }
+    }
+
+    override suspend fun listPinnedMessageIds(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long
+    ): Result<List<Long>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanBase = baseUrl.trimEnd('/')
+            val request = Request.Builder()
+                .url("$cleanBase/conversations/$conversationId/pinned-messages")
+                .header("Authorization", "Bearer $accessToken")
+                .get()
+                .build()
+            val arr = JSONArray(executeRequest(request))
+            buildList {
+                for (i in 0 until arr.length()) {
+                    add(arr.getJSONObject(i).getLong("messageId"))
+                }
+            }
+        }
+    }
+
+    override suspend fun pinMessage(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long,
+        messageId: Long
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanBase = baseUrl.trimEnd('/')
+            val request = Request.Builder()
+                .url("$cleanBase/conversations/$conversationId/pinned-messages/$messageId")
+                .header("Authorization", "Bearer $accessToken")
+                .post("{}".toRequestBody(jsonMediaType))
+                .build()
+            executeRequest(request)
+            Unit
+        }
+    }
+
+    override suspend fun unpinMessage(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long,
+        messageId: Long
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanBase = baseUrl.trimEnd('/')
+            val request = Request.Builder()
+                .url("$cleanBase/conversations/$conversationId/pinned-messages/$messageId")
+                .header("Authorization", "Bearer $accessToken")
+                .delete()
+                .build()
+            executeRequest(request)
+            Unit
         }
     }
 

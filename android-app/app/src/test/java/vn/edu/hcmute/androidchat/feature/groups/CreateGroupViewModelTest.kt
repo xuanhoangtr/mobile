@@ -186,5 +186,27 @@ class CreateGroupViewModelTest {
 
         override suspend fun toggleReaction(baseUrl: String, accessToken: String, messageId: Long, emoji: String) =
             Result.success(emptyMap<String, Int>())
+
+        override suspend fun searchMessages(
+            baseUrl: String,
+            accessToken: String,
+            conversationId: Long?,
+            query: String,
+            currentUserId: Long,
+            cursor: String?,
+            limit: Int
+        ) = Result.success(CursorPageResult<MessageUiModel>(emptyList(), null, false))
+
+        override suspend fun setConversationPinned(baseUrl: String, accessToken: String, conversationId: Long, pinned: Boolean) =
+            Result.failure<ConversationUiModel>(UnsupportedOperationException())
+
+        override suspend fun listPinnedMessageIds(baseUrl: String, accessToken: String, conversationId: Long) =
+            Result.success(emptyList<Long>())
+
+        override suspend fun pinMessage(baseUrl: String, accessToken: String, conversationId: Long, messageId: Long) =
+            Result.success(Unit)
+
+        override suspend fun unpinMessage(baseUrl: String, accessToken: String, conversationId: Long, messageId: Long) =
+            Result.success(Unit)
     }
 }

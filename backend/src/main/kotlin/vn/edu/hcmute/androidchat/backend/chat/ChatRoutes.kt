@@ -293,6 +293,74 @@ fun Route.registerChatRoutes(
                 is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
             }
         }
+
+        get("/messages/search") {
+            val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
+                ?: return@get call.respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", "Invalid authenticated principal")
+            val query = call.request.queryParameters["q"] ?: ""
+            val conversationId = call.request.queryParameters["conversationId"]?.toLongOrNull()
+            val cursor = call.request.queryParameters["cursor"]?.toLongOrNull()
+            val limit = call.request.queryParameters["limit"]?.toIntOrNull()?.coerceIn(1, 100) ?: 20
+
+            when (val res = repository.searchMessages(userId, conversationId, query, cursor, limit)) {
+                is GroupOpResult.Ok -> call.respond(HttpStatusCode.OK, res.value)
+                is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
+            }
+        }
+
+        patch("/conversations/{id}/pin") {
+            val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
+                ?: return@patch call.respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", "Invalid authenticated principal")
+            val conversationId = call.parameters["id"]?.toLongOrNull()?.takeIf { it > 0L }
+                ?: return@patch call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid conversation id")
+            val body = runCatching { call.receiveNullable<PinConversationRequest>() }.getOrNull()
+                ?: return@patch call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid request body")
+
+            when (val res = repository.setConversationPinned(userId, conversationId, body.pinned, Instant.now().toString())) {
+                is GroupOpResult.Ok -> call.respond(HttpStatusCode.OK, res.value)
+                is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
+            }
+        }
+
+        get("/conversations/{id}/pinned-messages") {
+            val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
+                ?: return@get call.respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", "Invalid authenticated principal")
+            val conversationId = call.parameters["id"]?.toLongOrNull()?.takeIf { it > 0L }
+                ?: return@get call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid conversation id")
+
+            when (val res = repository.listPinnedMessages(userId, conversationId)) {
+                is GroupOpResult.Ok -> call.respond(HttpStatusCode.OK, res.value)
+                is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
+            }
+        }
+
+        post("/conversations/{id}/pinned-messages/{messageId}") {
+            val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
+                ?: return@post call.respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", "Invalid authenticated principal")
+            val conversationId = call.parameters["id"]?.toLongOrNull()?.takeIf { it > 0L }
+                ?: return@post call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid conversation id")
+            val messageId = call.parameters["messageId"]?.toLongOrNull()?.takeIf { it > 0L }
+                ?: return@post call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid message id")
+
+            when (val res = repository.pinMessage(userId, conversationId, messageId, Instant.now().toString())) {
+                is GroupOpResult.Ok -> call.respond(HttpStatusCode.OK, res.value)
+                is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
+            }
+        }
+
+        delete("/conversations/{id}/pinned-messages/{messageId}") {
+            val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
+                ?: return@delete call.respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", "Invalid authenticated principal")
+            val conversationId = call.parameters["id"]?.toLongOrNull()?.takeIf { it > 0L }
+                ?: return@delete call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid conversation id")
+            val messageId = call.parameters["messageId"]?.toLongOrNull()?.takeIf { it > 0L }
+                ?: return@delete call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid message id")
+
+            when (val res = repository.unpinMessage(userId, conversationId, messageId)) {
+                is GroupOpResult.Ok -> call.respond(HttpStatusCode.NoContent)
+                is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
+            }
+        }
     }
 }
 

@@ -138,4 +138,38 @@ class ChatRealtimeParserTest {
         assertNotNull(reaction)
         assertEquals(2, reaction!!.counts["❤️"])
     }
+
+    @Test
+    fun encodeAndDecodeCallSignalForMediaIntegration() {
+        val encoded = ChatRealtimeParser.encodeCallSignal(
+            conversationId = 101L,
+            callId = "call-abc",
+            signalType = "OFFER",
+            targetUserId = 99L,
+            sdpOrCandidate = "v=0",
+            requestId = "r-call",
+            timestamp = "2026-11-13T11:55:00Z"
+        )
+        val root = JSONObject(encoded)
+        assertEquals("call.signal", root.getString("type"))
+
+        val serverJson = """
+            {
+              "type":"call.signal",
+              "payload":{
+                "conversationId":101,
+                "callId":"call-abc",
+                "signalType":"OFFER",
+                "fromUserId":42,
+                "targetUserId":99,
+                "sdpOrCandidate":"v=0"
+              }
+            }
+        """.trimIndent()
+        val decoded = ChatRealtimeParser.decodeEvent(serverJson) as? ChatServerEvent.CallSignal
+        assertNotNull(decoded)
+        assertEquals(42L, decoded!!.fromUserId)
+        assertEquals("OFFER", decoded.signalType)
+        assertEquals("v=0", decoded.sdpOrCandidate)
+    }
 }

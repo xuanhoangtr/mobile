@@ -163,6 +163,7 @@ private suspend fun DefaultWebSocketServerSession.handleIncomingTextFrame(
         "message.send" -> handleMessageSend(envelope, userId, nowIso, repository, sessions)
         "typing" -> handleTyping(envelope, userId, repository, sessions)
         "receipt" -> handleReceipt(envelope, userId, nowIso, repository, sessions)
+        "call.signal" -> handleCallSignal(envelope, userId, repository, sessions)
         else -> sendError(
             requestId = envelope.requestId,
             code = "UNSUPPORTED_EVENT",
@@ -271,6 +272,46 @@ private suspend fun DefaultWebSocketServerSession.handleReceipt(
         type = "receipt",
         requestId = envelope.requestId,
         payload = saved
+    )
+}
+
+private suspend fun DefaultWebSocketServerSession.handleCallSignal(
+    envelope: WsEnvelope,
+    userId: Long,
+    repository: ChatRepository,
+    sessions: ChatSessionRegistry
+) {
+    val payload = runCatching {
+        AppJson.decodeFromJsonElement<CallSignalPayload>(envelope.payload)
+    }.getOrNull() ?: return sendError(envelope.requestId, "VALIDATION_ERROR", "Invalid call.signal payload")
+
+    if (payload.conversationId <= 0L || payload.callId.isBlank() || payload.signalType.isBlank()) {
+        sendError(envelope.requestId, "VALIDATION_ERROR", "conversationId, callId, and signalType are required")
+        return
+    }
+
+    val members = repository.activeMemberIds(payload.conversationId)
+    if (members.isNotEmpty() && userId !in members) {
+        sendError(envelope.requestId, "FORBIDDEN", "User is not an active member of this conversation")
+        return
+    }
+
+    val targets = when {
+        payload.targetUserId != null -> {
+            if (members.isNotEmpty() && payload.targetUserId !in members) {
+                sendError(envelope.requestId, "FORBIDDEN", "Target user is not in this conversation")
+                return
+            }
+            setOf(payload.targetUserId)
+        }
+        else -> (members - userId).ifEmpty { setOf(userId) }
+    }
+
+    sessions.broadcastToUsers(
+        userIds = targets,
+        type = "call.signal",
+        requestId = envelope.requestId,
+        payload = payload.copy(fromUserId = userId)
     )
 }
 

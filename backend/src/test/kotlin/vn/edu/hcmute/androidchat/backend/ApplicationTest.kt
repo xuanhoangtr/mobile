@@ -451,4 +451,86 @@ class ApplicationTest {
         }
         assertEquals(HttpStatusCode.BadRequest, editAfterRecall.status)
     }
+
+    @Test
+    fun searchMessagesAndPinConversationAndPinnedMessagesEnforcePermissions() = testApplication {
+        val repo = InMemoryChatRepository().apply {
+            seedConversation(conversationId = 101L, memberIds = setOf(10L, 20L))
+            seedConversation(conversationId = 303L, memberIds = setOf(30L, 40L))
+            saveMessage(10L, MessageSendPayload("s1", 101L, "TEXT", "Android Kotlin chat"), "2026-11-13T11:50:01Z")
+            saveMessage(20L, MessageSendPayload("s2", 101L, "TEXT", "Kotlin coroutines"), "2026-11-13T11:50:02Z")
+            saveMessage(30L, MessageSendPayload("s3", 303L, "TEXT", "Kotlin secret other chat"), "2026-11-13T11:50:03Z")
+            recallMessage(10L, 1L, "2026-11-13T11:50:04Z") // message 1 recalled -> must not appear in search
+        }
+        application { module(testConfig, chatRepositoryOverride = repo) }
+
+        val token10 = issueTestToken(10L)
+
+        // Searching all accessible conversations only returns message 2 (excludes recalled msg 1 and outsider msg 3)
+        val searchAll = client.get("/messages/search?q=kotlin") {
+            header(HttpHeaders.Authorization, "Bearer $token10")
+        }
+        assertEquals(HttpStatusCode.OK, searchAll.status)
+        val items = AppJson.parseToJsonElement(searchAll.bodyAsText()).jsonObject["items"]!!.jsonArray
+        assertEquals(1, items.size)
+        assertEquals(2L, items[0].jsonObject["id"]!!.jsonPrimitive.long)
+
+        // Searching forbidden conversation 303 -> 403
+        val forbiddenSearch = client.get("/messages/search?conversationId=303&q=kotlin") {
+            header(HttpHeaders.Authorization, "Bearer $token10")
+        }
+        assertEquals(HttpStatusCode.Forbidden, forbiddenSearch.status)
+
+        // Pin conversation 101 -> isPinned = true
+        val pinConv = client.patch("/conversations/101/pin") {
+            header(HttpHeaders.Authorization, "Bearer $token10")
+            contentType(ContentType.Application.Json)
+            setBody("""{"pinned":true}""")
+        }
+        assertEquals(HttpStatusCode.OK, pinConv.status)
+        assertTrue(AppJson.parseToJsonElement(pinConv.bodyAsText()).jsonObject["isPinned"]!!.jsonPrimitive.boolean)
+
+        // Pin and unpin message 2 in conversation 101
+        val pinMsg = client.post("/conversations/101/pinned-messages/2") {
+            header(HttpHeaders.Authorization, "Bearer $token10")
+        }
+        assertEquals(HttpStatusCode.OK, pinMsg.status)
+        val pinnedList = client.get("/conversations/101/pinned-messages") {
+            header(HttpHeaders.Authorization, "Bearer $token10")
+        }
+        assertEquals(1, AppJson.parseToJsonElement(pinnedList.bodyAsText()).jsonArray.size)
+
+        val unpinMsg = client.delete("/conversations/101/pinned-messages/2") {
+            header(HttpHeaders.Authorization, "Bearer $token10")
+        }
+        assertEquals(HttpStatusCode.NoContent, unpinMsg.status)
+    }
+
+    @Test
+    fun webSocketRelaysCallSignalingBetweenConversationMembers() = testApplication {
+        val repo = InMemoryChatRepository().apply {
+            seedConversation(conversationId = 101L, memberIds = setOf(42L, 99L))
+        }
+        application { module(testConfig, chatRepositoryOverride = repo) }
+
+        val wsClient = createClient { install(ClientWebSockets) }
+        wsClient.webSocket("/ws/chat", request = { header(HttpHeaders.Authorization, "Bearer ${issueTestToken(99L)}") }) {
+            incoming.receive() // self presence
+
+            wsClient.webSocket("/ws/chat", request = { header(HttpHeaders.Authorization, "Bearer ${issueTestToken(42L)}") }) {
+                incoming.receive() // self presence
+                send(
+                    Frame.Text(
+                        """{"type":"call.signal","requestId":"call-1","timestamp":"2026-11-13T11:55:00Z","payload":{"conversationId":101,"callId":"c-101","signalType":"OFFER","targetUserId":99,"sdpOrCandidate":"v=0"}}"""
+                    )
+                )
+            }
+
+            incoming.receive() // peer 42 presence ONLINE
+            val signalFrame = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
+            assertEquals("call.signal", signalFrame["type"]?.jsonPrimitive?.content)
+            assertEquals(42L, signalFrame["payload"]?.jsonObject?.get("fromUserId")?.jsonPrimitive?.long)
+            assertEquals("OFFER", signalFrame["payload"]?.jsonObject?.get("signalType")?.jsonPrimitive?.content)
+        }
+    }
 }

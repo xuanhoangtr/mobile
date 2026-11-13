@@ -198,4 +198,23 @@ class OkHttpChatWebSocketClient(
         val socket = activeSocket ?: return false
         return socket.send(ChatRealtimeParser.encodeReceipt(conversationId, messageId, status))
     }
+
+    override fun sendCallSignal(
+        conversationId: Long,
+        callId: String,
+        signalType: String,
+        targetUserId: Long?,
+        sdpOrCandidate: String?
+    ): Boolean {
+        val socket = activeSocket ?: return false
+        return socket.send(
+            ChatRealtimeParser.encodeCallSignal(
+                conversationId = conversationId,
+                callId = callId,
+                signalType = signalType,
+                targetUserId = targetUserId,
+                sdpOrCandidate = sdpOrCandidate
+            )
+        )
+    }
 }

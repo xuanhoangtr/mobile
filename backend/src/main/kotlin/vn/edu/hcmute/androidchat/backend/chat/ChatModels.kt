@@ -112,6 +112,29 @@ data class ReactionUpdatedPayload(
 )
 
 @Serializable
+data class PinConversationRequest(
+    val pinned: Boolean
+)
+
+@Serializable
+data class PinnedMessageDto(
+    val conversationId: Long,
+    val messageId: Long,
+    val pinnedBy: Long,
+    val pinnedAt: String
+)
+
+@Serializable
+data class CallSignalPayload(
+    val conversationId: Long,
+    val callId: String,
+    val signalType: String,
+    val fromUserId: Long? = null,
+    val targetUserId: Long? = null,
+    val sdpOrCandidate: String? = null
+)
+
+@Serializable
 data class MessageAckPayload(
     val clientMessageId: String,
     val conversationId: Long,

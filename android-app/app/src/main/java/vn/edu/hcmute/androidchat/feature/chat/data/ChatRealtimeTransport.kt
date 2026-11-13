@@ -74,6 +74,15 @@ sealed interface ChatServerEvent {
         val added: Boolean,
         val counts: Map<String, Int>
     ) : ChatServerEvent
+
+    data class CallSignal(
+        val conversationId: Long,
+        val callId: String,
+        val signalType: String,
+        val fromUserId: Long,
+        val targetUserId: Long?,
+        val sdpOrCandidate: String?
+    ) : ChatServerEvent
 }
 
 interface ChatRealtimeTransport {
@@ -98,4 +107,12 @@ interface ChatRealtimeTransport {
         messageId: Long,
         status: MessageDeliveryStatus
     ): Boolean
+
+    fun sendCallSignal(
+        conversationId: Long,
+        callId: String,
+        signalType: String,
+        targetUserId: Long? = null,
+        sdpOrCandidate: String? = null
+    ): Boolean = false
 }

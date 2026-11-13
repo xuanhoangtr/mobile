@@ -78,6 +78,27 @@ interface ChatRepository {
         emoji: String,
         nowIso: String
     ): GroupOpResult<ReactionUpdatedPayload>
+    suspend fun searchMessages(
+        userId: Long,
+        conversationId: Long?,
+        query: String,
+        cursor: Long? = null,
+        limit: Int = 20
+    ): GroupOpResult<CursorPage<MessageDto>>
+    suspend fun setConversationPinned(
+        userId: Long,
+        conversationId: Long,
+        pinned: Boolean,
+        nowIso: String
+    ): GroupOpResult<ConversationSummaryDto>
+    suspend fun listPinnedMessages(userId: Long, conversationId: Long): GroupOpResult<List<PinnedMessageDto>>
+    suspend fun pinMessage(
+        userId: Long,
+        conversationId: Long,
+        messageId: Long,
+        nowIso: String
+    ): GroupOpResult<PinnedMessageDto>
+    suspend fun unpinMessage(userId: Long, conversationId: Long, messageId: Long): GroupOpResult<Unit>
     suspend fun listMessages(userId: Long, conversationId: Long, cursor: Long? = null, limit: Int = 30): CursorPage<MessageDto>?
     suspend fun saveMessage(senderId: Long, payload: MessageSendPayload, nowIso: String): SaveMessageResult
     suspend fun activeMemberIds(conversationId: Long): Set<Long>
@@ -900,6 +921,202 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
         }
     }
 
+    override suspend fun searchMessages(
+        userId: Long,
+        conversationId: Long?,
+        query: String,
+        cursor: Long?,
+        limit: Int
+    ): GroupOpResult<CursorPage<MessageDto>> = withContext(Dispatchers.IO) {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) {
+            return@withContext GroupOpResult.Err(400, "VALIDATION_ERROR", "Search query cannot be blank")
+        }
+        val clampedLimit = limit.coerceIn(1, 100)
+        dataSource.connection.use { conn ->
+            if (conversationId != null && !isActiveMember(conn, conversationId, userId)) {
+                return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not an active member of this conversation")
+            }
+            val sql = """
+                SELECT m.id, m.client_message_id, m.conversation_id, m.sender_id, m.type, m.content,
+                       m.media_ref, m.reply_to_id, m.metadata::text, m.created_at, m.edited_at, m.deleted_at
+                FROM messages m
+                JOIN conversation_members cm ON cm.conversation_id = m.conversation_id
+                WHERE cm.user_id = ? AND cm.status = 'ACTIVE'
+                  AND m.deleted_at IS NULL
+                  AND (? IS NULL OR m.conversation_id = ?)
+                  AND (? IS NULL OR m.id < ?)
+                  AND m.content ILIKE ?
+                ORDER BY m.id DESC
+                LIMIT ?
+            """.trimIndent()
+            conn.prepareStatement(sql).use { stmt ->
+                stmt.setLong(1, userId)
+                if (conversationId != null) {
+                    stmt.setLong(2, conversationId)
+                    stmt.setLong(3, conversationId)
+                } else {
+                    stmt.setNull(2, java.sql.Types.BIGINT)
+                    stmt.setNull(3, java.sql.Types.BIGINT)
+                }
+                if (cursor != null) {
+                    stmt.setLong(4, cursor)
+                    stmt.setLong(5, cursor)
+                } else {
+                    stmt.setNull(4, java.sql.Types.BIGINT)
+                    stmt.setNull(5, java.sql.Types.BIGINT)
+                }
+                stmt.setString(6, "%$trimmed%")
+                stmt.setInt(7, clampedLimit + 1)
+                stmt.executeQuery().use { rs ->
+                    val rows = mutableListOf<MessageDto>()
+                    while (rs.next()) {
+                        val metadataText = rs.getString("metadata") ?: "{}"
+                        rows += MessageDto(
+                            id = rs.getLong("id"),
+                            clientMessageId = rs.getObject("client_message_id").toString(),
+                            conversationId = rs.getLong("conversation_id"),
+                            senderId = rs.getLong("sender_id"),
+                            type = rs.getString("type"),
+                            content = rs.getString("content"),
+                            mediaRef = rs.getLong("media_ref").takeUnless { rs.wasNull() },
+                            replyToId = rs.getLong("reply_to_id").takeUnless { rs.wasNull() },
+                            metadata = AppJson.decodeFromString<JsonObject>(metadataText),
+                            createdAt = rs.getTimestamp("created_at").toInstant().toString(),
+                            editedAt = rs.getTimestamp("edited_at")?.toInstant()?.toString(),
+                            deletedAt = rs.getTimestamp("deleted_at")?.toInstant()?.toString()
+                        )
+                    }
+                    val hasMore = rows.size > clampedLimit
+                    val page = if (hasMore) rows.take(clampedLimit) else rows
+                    val nextCursor = if (hasMore) page.lastOrNull()?.id?.toString() else null
+                    GroupOpResult.Ok(CursorPage(items = page, nextCursor = nextCursor, hasMore = hasMore))
+                }
+            }
+        }
+    }
+
+    override suspend fun setConversationPinned(
+        userId: Long,
+        conversationId: Long,
+        pinned: Boolean,
+        nowIso: String
+    ): GroupOpResult<ConversationSummaryDto> = withContext(Dispatchers.IO) {
+        val timestamp = Timestamp.from(Instant.parse(nowIso))
+        dataSource.connection.use { conn ->
+            if (!isActiveMember(conn, conversationId, userId)) {
+                return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+            }
+            val updSql = """
+                UPDATE conversation_members
+                SET is_pinned = ?, pinned_at = ?
+                WHERE conversation_id = ? AND user_id = ? AND status = 'ACTIVE'
+            """.trimIndent()
+            conn.prepareStatement(updSql).use { stmt ->
+                stmt.setBoolean(1, pinned)
+                if (pinned) stmt.setTimestamp(2, timestamp) else stmt.setNull(2, java.sql.Types.TIMESTAMP)
+                stmt.setLong(3, conversationId)
+                stmt.setLong(4, userId)
+                stmt.executeUpdate()
+            }
+            val selSql = "SELECT id, type, name, avatar_url, updated_at FROM conversations WHERE id = ?"
+            conn.prepareStatement(selSql).use { stmt ->
+                stmt.setLong(1, conversationId)
+                stmt.executeQuery().use { rs ->
+                    if (!rs.next()) return@withContext GroupOpResult.Err(404, "NOT_FOUND", "Conversation not found")
+                    GroupOpResult.Ok(
+                        ConversationSummaryDto(
+                            id = rs.getLong("id"),
+                            type = rs.getString("type"),
+                            name = rs.getString("name"),
+                            avatarUrl = rs.getString("avatar_url"),
+                            isPinned = pinned,
+                            updatedAt = rs.getTimestamp("updated_at").toInstant().toString()
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    override suspend fun listPinnedMessages(
+        userId: Long,
+        conversationId: Long
+    ): GroupOpResult<List<PinnedMessageDto>> = withContext(Dispatchers.IO) {
+        dataSource.connection.use { conn ->
+            if (!isActiveMember(conn, conversationId, userId)) {
+                return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+            }
+            val sql = """
+                SELECT conversation_id, message_id, pinned_by, pinned_at
+                FROM pinned_messages
+                WHERE conversation_id = ?
+                ORDER BY pinned_at DESC
+            """.trimIndent()
+            conn.prepareStatement(sql).use { stmt ->
+                stmt.setLong(1, conversationId)
+                stmt.executeQuery().use { rs ->
+                    val list = mutableListOf<PinnedMessageDto>()
+                    while (rs.next()) {
+                        list += PinnedMessageDto(
+                            conversationId = rs.getLong("conversation_id"),
+                            messageId = rs.getLong("message_id"),
+                            pinnedBy = rs.getLong("pinned_by"),
+                            pinnedAt = rs.getTimestamp("pinned_at").toInstant().toString()
+                        )
+                    }
+                    GroupOpResult.Ok(list)
+                }
+            }
+        }
+    }
+
+    override suspend fun pinMessage(
+        userId: Long,
+        conversationId: Long,
+        messageId: Long,
+        nowIso: String
+    ): GroupOpResult<PinnedMessageDto> = withContext(Dispatchers.IO) {
+        val timestamp = Timestamp.from(Instant.parse(nowIso))
+        dataSource.connection.use { conn ->
+            if (!isActiveMember(conn, conversationId, userId)) {
+                return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+            }
+            val sql = """
+                INSERT INTO pinned_messages (conversation_id, message_id, pinned_by, pinned_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (conversation_id, message_id) DO UPDATE SET pinned_by = EXCLUDED.pinned_by, pinned_at = EXCLUDED.pinned_at
+            """.trimIndent()
+            conn.prepareStatement(sql).use { stmt ->
+                stmt.setLong(1, conversationId)
+                stmt.setLong(2, messageId)
+                stmt.setLong(3, userId)
+                stmt.setTimestamp(4, timestamp)
+                stmt.executeUpdate()
+            }
+            GroupOpResult.Ok(PinnedMessageDto(conversationId, messageId, userId, nowIso))
+        }
+    }
+
+    override suspend fun unpinMessage(
+        userId: Long,
+        conversationId: Long,
+        messageId: Long
+    ): GroupOpResult<Unit> = withContext(Dispatchers.IO) {
+        dataSource.connection.use { conn ->
+            if (!isActiveMember(conn, conversationId, userId)) {
+                return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+            }
+            val sql = "DELETE FROM pinned_messages WHERE conversation_id = ? AND message_id = ?"
+            conn.prepareStatement(sql).use { stmt ->
+                stmt.setLong(1, conversationId)
+                stmt.setLong(2, messageId)
+                stmt.executeUpdate()
+            }
+            GroupOpResult.Ok(Unit)
+        }
+    }
+
     private fun activeMemberRole(conn: java.sql.Connection, conversationId: Long, userId: Long): String? {
         val sql = """
             SELECT role FROM conversation_members
@@ -937,6 +1154,8 @@ class InMemoryChatRepository : ChatRepository {
     private val memberRolesByConversation = ConcurrentHashMap<Long, ConcurrentHashMap<Long, ConversationMemberDto>>()
     private val receiptsByMessageUser = ConcurrentHashMap<String, String>()
     private val reactionsByMessage = ConcurrentHashMap<Long, ConcurrentHashMap<String, MutableSet<Long>>>()
+    private val pinnedConversationsByUser = ConcurrentHashMap<Long, MutableSet<Long>>()
+    private val pinnedMessagesByConversation = ConcurrentHashMap<Long, ConcurrentHashMap<Long, PinnedMessageDto>>()
     private val messagesByConversation = ConcurrentHashMap<Long, CopyOnWriteArrayList<MessageDto>>()
     private val dedupIndex = ConcurrentHashMap<String, MessageDto>()
     private val nextConversationId = AtomicLong(1000L)
@@ -1407,5 +1626,105 @@ class InMemoryChatRepository : ChatRepository {
                 counts = counts
             )
         )
+    }
+
+    override suspend fun searchMessages(
+        userId: Long,
+        conversationId: Long?,
+        query: String,
+        cursor: Long?,
+        limit: Int
+    ): GroupOpResult<CursorPage<MessageDto>> {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) {
+            return GroupOpResult.Err(400, "VALIDATION_ERROR", "Search query cannot be blank")
+        }
+        if (conversationId != null) {
+            val members = membersByConversation[conversationId]
+            if (members != null && userId !in members) {
+                return GroupOpResult.Err(403, "FORBIDDEN", "Not an active member of this conversation")
+            }
+        }
+        val clampedLimit = limit.coerceIn(1, 100)
+        val allowedConvIds = if (conversationId != null) {
+            listOf(conversationId)
+        } else {
+            membersByConversation.filterValues { userId in it }.keys.toList()
+        }
+        val matchingDesc = allowedConvIds
+            .flatMap { cid -> messagesByConversation[cid].orEmpty() }
+            .filter { msg ->
+                msg.deletedAt == null &&
+                    (cursor == null || msg.id < cursor) &&
+                    (msg.content?.contains(trimmed, ignoreCase = true) == true)
+            }
+            .sortedByDescending { it.id }
+
+        val hasMore = matchingDesc.size > clampedLimit
+        val page = if (hasMore) matchingDesc.take(clampedLimit) else matchingDesc
+        val nextCursor = if (hasMore) page.lastOrNull()?.id?.toString() else null
+        return GroupOpResult.Ok(CursorPage(items = page, nextCursor = nextCursor, hasMore = hasMore))
+    }
+
+    override suspend fun setConversationPinned(
+        userId: Long,
+        conversationId: Long,
+        pinned: Boolean,
+        nowIso: String
+    ): GroupOpResult<ConversationSummaryDto> {
+        val members = membersByConversation[conversationId]
+        if (members == null || userId !in members) {
+            return GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+        }
+        val conv = conversations[conversationId]
+            ?: return GroupOpResult.Err(404, "NOT_FOUND", "Conversation not found")
+        val set = pinnedConversationsByUser.computeIfAbsent(userId) { ConcurrentHashMap.newKeySet() }
+        if (pinned) set.add(conversationId) else set.remove(conversationId)
+        val updated = conv.copy(isPinned = pinned)
+        conversations[conversationId] = updated
+        return GroupOpResult.Ok(updated)
+    }
+
+    override suspend fun listPinnedMessages(
+        userId: Long,
+        conversationId: Long
+    ): GroupOpResult<List<PinnedMessageDto>> {
+        val members = membersByConversation[conversationId]
+        if (members == null || userId !in members) {
+            return GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+        }
+        val items = pinnedMessagesByConversation[conversationId]?.values
+            ?.sortedByDescending { it.pinnedAt }
+            ?: emptyList()
+        return GroupOpResult.Ok(items)
+    }
+
+    override suspend fun pinMessage(
+        userId: Long,
+        conversationId: Long,
+        messageId: Long,
+        nowIso: String
+    ): GroupOpResult<PinnedMessageDto> {
+        val members = membersByConversation[conversationId]
+        if (members == null || userId !in members) {
+            return GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+        }
+        val dto = PinnedMessageDto(conversationId, messageId, userId, nowIso)
+        pinnedMessagesByConversation
+            .computeIfAbsent(conversationId) { ConcurrentHashMap() }[messageId] = dto
+        return GroupOpResult.Ok(dto)
+    }
+
+    override suspend fun unpinMessage(
+        userId: Long,
+        conversationId: Long,
+        messageId: Long
+    ): GroupOpResult<Unit> {
+        val members = membersByConversation[conversationId]
+        if (members == null || userId !in members) {
+            return GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+        }
+        pinnedMessagesByConversation[conversationId]?.remove(messageId)
+        return GroupOpResult.Ok(Unit)
     }
 }

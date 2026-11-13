@@ -363,6 +363,31 @@ class ChatViewModelsTest {
         assertNull(vm.getCopyableText(vm.uiState.value.messages[0]))
     }
 
+    @Test
+    fun chatRoomViewModelSearchesAndPinsMessagesAndListViewModelPersistsPin() = runTest {
+        val fakeApi = FakeChatApiService()
+        val fakeCache = FakeChatLocalCache()
+        val roomVm = ChatRoomViewModel(apiService = fakeApi, localCache = fakeCache)
+        roomVm.openConversation(conversationId = 202L, title = "Searchable", currentUserId = 42L)
+
+        roomVm.searchInConversation("http://localhost:8080", "tok", "kotlin")
+        assertEquals(1, roomVm.uiState.value.searchResults.size)
+        assertEquals("Kotlin search hit", roomVm.uiState.value.searchResults.single().content)
+        roomVm.clearSearch()
+        assertTrue(roomVm.uiState.value.searchResults.isEmpty())
+
+        roomVm.pinMessage("http://localhost:8080", "tok", 900L)
+        assertEquals(listOf(900L), roomVm.uiState.value.pinnedMessageIds)
+        roomVm.unpinMessage("http://localhost:8080", "tok", 900L)
+        assertTrue(roomVm.uiState.value.pinnedMessageIds.isEmpty())
+
+        val listVm = ChatListViewModel(apiService = fakeApi, localCache = fakeCache)
+        listVm.loadConversations("http://localhost:8080", "tok")
+        listVm.togglePinConversation("http://localhost:8080", "tok", 202L)
+        assertTrue(listVm.uiState.value.conversations.single().isPinned)
+        assertTrue(fakeCache.getConversations().single().isPinned)
+    }
+
     private class FakeChatRealtimeTransport : ChatRealtimeTransport {
         val connectionStateFlow = MutableStateFlow(WsConnectionState.DISCONNECTED)
         val eventsFlow = MutableSharedFlow<ChatServerEvent>(extraBufferCapacity = 16)
@@ -540,6 +565,58 @@ class ChatViewModelsTest {
             messageId: Long,
             emoji: String
         ) = Result.success(mapOf(emoji to 1))
+
+        override suspend fun searchMessages(
+            baseUrl: String,
+            accessToken: String,
+            conversationId: Long?,
+            query: String,
+            currentUserId: Long,
+            cursor: String?,
+            limit: Int
+        ) = Result.success(
+            CursorPageResult(
+                items = listOf(sampleMsg(701L, conversationId ?: 202L, "Kotlin search hit")),
+                nextCursor = null,
+                hasMore = false
+            )
+        )
+
+        override suspend fun setConversationPinned(
+            baseUrl: String,
+            accessToken: String,
+            conversationId: Long,
+            pinned: Boolean
+        ) = Result.success(
+            ConversationUiModel(
+                id = conversationId,
+                type = ConversationType.DIRECT,
+                title = "Cong Huy",
+                lastMessagePreview = "msg-4",
+                lastMessageTime = "11:00",
+                isPinned = pinned
+            )
+        )
+
+        override suspend fun listPinnedMessageIds(
+            baseUrl: String,
+            accessToken: String,
+            conversationId: Long
+        ) = Result.success(emptyList<Long>())
+
+        override suspend fun pinMessage(
+            baseUrl: String,
+            accessToken: String,
+            conversationId: Long,
+            messageId: Long
+        ) = Result.success(Unit)
+
+        override suspend fun unpinMessage(
+            baseUrl: String,
+            accessToken: String,
+            conversationId: Long,
+            messageId: Long
+        ) = Result.success(Unit)
     }
 
     private class FakeChatLocalCache : ChatLocalCache {

@@ -59,6 +59,24 @@ object ChatRealtimeParser {
         return wrapEnvelope("receipt", requestId, timestamp, payload)
     }
 
+    fun encodeCallSignal(
+        conversationId: Long,
+        callId: String,
+        signalType: String,
+        targetUserId: Long? = null,
+        sdpOrCandidate: String? = null,
+        requestId: String = UUID.randomUUID().toString(),
+        timestamp: String = Instant.now().toString()
+    ): String {
+        val payload = JSONObject()
+            .put("conversationId", conversationId)
+            .put("callId", callId)
+            .put("signalType", signalType)
+        if (targetUserId != null) payload.put("targetUserId", targetUserId)
+        if (sdpOrCandidate != null) payload.put("sdpOrCandidate", sdpOrCandidate)
+        return wrapEnvelope("call.signal", requestId, timestamp, payload)
+    }
+
     fun decodeEvent(rawJson: String): ChatServerEvent? {
         return runCatching {
             val root = JSONObject(rawJson)
@@ -148,6 +166,19 @@ object ChatRealtimeParser {
                         counts = counts
                     )
                 }
+
+                "call.signal" -> ChatServerEvent.CallSignal(
+                    conversationId = payload.getLong("conversationId"),
+                    callId = payload.getString("callId"),
+                    signalType = payload.getString("signalType"),
+                    fromUserId = payload.optLong("fromUserId", 0L),
+                    targetUserId = if (payload.has("targetUserId") && !payload.isNull("targetUserId")) {
+                        payload.getLong("targetUserId")
+                    } else {
+                        null
+                    },
+                    sdpOrCandidate = payload.optString("sdpOrCandidate").takeIf { it.isNotBlank() && it != "null" }
+                )
 
                 else -> null
             }

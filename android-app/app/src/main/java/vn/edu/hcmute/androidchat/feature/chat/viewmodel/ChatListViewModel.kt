@@ -127,6 +127,22 @@ class ChatListViewModel(
         }
     }
 
+    fun togglePinConversation(baseUrl: String, accessToken: String, conversationId: Long) {
+        val currentPinned = _uiState.value.conversations.firstOrNull { it.id == conversationId }?.isPinned ?: return
+        val nextPinned = !currentPinned
+        togglePinLocal(conversationId)
+        viewModelScope.launch {
+            runCatching { localCache?.saveConversations(_uiState.value.conversations) }
+            apiService?.setConversationPinned(baseUrl, accessToken, conversationId, nextPinned)
+                ?.onFailure { err ->
+                    // Revert optimistic pin if server rejects
+                    togglePinLocal(conversationId)
+                    runCatching { localCache?.saveConversations(_uiState.value.conversations) }
+                    setError(err.message ?: "Failed to update pin")
+                }
+        }
+    }
+
     private fun handleServerEvent(event: ChatServerEvent) {
         when (event) {
             is ChatServerEvent.MessageCreated -> {

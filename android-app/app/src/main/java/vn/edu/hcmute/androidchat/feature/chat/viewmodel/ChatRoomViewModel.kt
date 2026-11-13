@@ -444,6 +444,76 @@ class ChatRoomViewModel(
         }
     }
 
+    fun searchInConversation(baseUrl: String, accessToken: String, query: String) {
+        val conversationId = _uiState.value.conversationId
+        val trimmed = query.trim()
+        _uiState.update { it.copy(searchQuery = query) }
+        if (conversationId <= 0L || trimmed.isEmpty()) {
+            _uiState.update { it.copy(searchResults = emptyList()) }
+            return
+        }
+        val service = apiService ?: return
+        viewModelScope.launch {
+            service.searchMessages(
+                baseUrl = baseUrl,
+                accessToken = accessToken,
+                conversationId = conversationId,
+                query = trimmed,
+                currentUserId = activeCurrentUserId
+            ).onSuccess { page ->
+                _uiState.update { it.copy(searchResults = page.items) }
+            }.onFailure { err ->
+                _uiState.update { it.copy(errorMessage = err.message ?: "Search failed") }
+            }
+        }
+    }
+
+    fun clearSearch() {
+        _uiState.update { it.copy(searchQuery = "", searchResults = emptyList()) }
+    }
+
+    fun loadPinnedMessages(baseUrl: String, accessToken: String) {
+        val conversationId = _uiState.value.conversationId
+        if (conversationId <= 0L) return
+        val service = apiService ?: return
+        viewModelScope.launch {
+            service.listPinnedMessageIds(baseUrl, accessToken, conversationId)
+                .onSuccess { ids -> _uiState.update { it.copy(pinnedMessageIds = ids) } }
+        }
+    }
+
+    fun pinMessage(baseUrl: String, accessToken: String, messageId: Long) {
+        val conversationId = _uiState.value.conversationId
+        if (conversationId <= 0L || messageId <= 0L) return
+        val service = apiService ?: return
+        viewModelScope.launch {
+            service.pinMessage(baseUrl, accessToken, conversationId, messageId)
+                .onSuccess {
+                    _uiState.update { state ->
+                        if (messageId in state.pinnedMessageIds) state
+                        else state.copy(pinnedMessageIds = listOf(messageId) + state.pinnedMessageIds)
+                    }
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(errorMessage = err.message ?: "Failed to pin message") }
+                }
+        }
+    }
+
+    fun unpinMessage(baseUrl: String, accessToken: String, messageId: Long) {
+        val conversationId = _uiState.value.conversationId
+        if (conversationId <= 0L || messageId <= 0L) return
+        val service = apiService ?: return
+        viewModelScope.launch {
+            service.unpinMessage(baseUrl, accessToken, conversationId, messageId)
+                .onSuccess {
+                    _uiState.update { state ->
+                        state.copy(pinnedMessageIds = state.pinnedMessageIds.filterNot { it == messageId })
+                    }
+                }
+        }
+    }
+
     private fun handleServerEvent(event: ChatServerEvent) {
         val currentConversationId = _uiState.value.conversationId
         when (event) {
