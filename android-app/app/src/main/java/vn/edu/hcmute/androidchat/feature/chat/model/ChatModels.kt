@@ -95,6 +95,8 @@ data class ChatRoomUiState(
     val searchQuery: String = "",
     val searchResults: List<MessageUiModel> = emptyList(),
     val pinnedMessageIds: List<Long> = emptyList(),
+    val firstVisibleMessageIndex: Int = 0,
+    val firstVisibleMessageOffset: Int = 0,
     val typingUserNames: List<String> = emptyList(),
     val isPeerOnline: Boolean = false,
     val peerLastSeenAt: String? = null,

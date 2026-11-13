@@ -341,6 +341,26 @@ class ChatRoomViewModel(
         _uiState.update { it.copy(errorMessage = null) }
     }
 
+    fun updateScrollPosition(firstVisibleIndex: Int, firstVisibleOffset: Int) {
+        _uiState.update {
+            it.copy(
+                firstVisibleMessageIndex = firstVisibleIndex.coerceAtLeast(0),
+                firstVisibleMessageOffset = firstVisibleOffset.coerceAtLeast(0)
+            )
+        }
+    }
+
+    fun cancelFailedMessage(localId: String) {
+        _uiState.update { state ->
+            state.copy(
+                messages = state.messages.filterNot {
+                    it.localId == localId && it.deliveryStatus == MessageDeliveryStatus.FAILED
+                }
+            )
+        }
+        persistCurrentMessages()
+    }
+
     fun markMessageRead(messageId: Long): Boolean {
         val activeTransport = transport ?: return false
         val conversationId = _uiState.value.conversationId
@@ -658,7 +678,7 @@ class ChatRoomViewModel(
                 _uiState.update { it.copy(errorMessage = event.message) }
             }
 
-            else -> Unit
+            is ChatServerEvent.CallSignal -> Unit
         }
     }
 
@@ -677,7 +697,8 @@ class ChatRoomViewModel(
                 byKey[msg.clientMessageId] = msg
             }
         }
-        return byKey.values.toList()
+        val (confirmed, pending) = byKey.values.partition { it.serverId != null }
+        return confirmed.sortedBy { it.serverId } + pending
     }
 
     private fun nextMonotonicStatus(

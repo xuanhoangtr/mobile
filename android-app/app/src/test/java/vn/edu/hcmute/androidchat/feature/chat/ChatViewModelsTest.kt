@@ -388,6 +388,28 @@ class ChatViewModelsTest {
         assertTrue(fakeCache.getConversations().single().isPinned)
     }
 
+    @Test
+    fun chatRoomViewModelPreservesScrollPositionCancelsFailedAndOrdersMessages() = runTest {
+        val fakeApi = FakeChatApiService()
+        val vm = ChatRoomViewModel(apiService = fakeApi)
+        vm.openConversation(conversationId = 202L, title = "Rotation", currentUserId = 42L)
+
+        vm.updateScrollPosition(firstVisibleIndex = 12, firstVisibleOffset = 48)
+        assertEquals(12, vm.uiState.value.firstVisibleMessageIndex)
+        assertEquals(48, vm.uiState.value.firstVisibleMessageOffset)
+
+        vm.onDraftChanged("Will cancel")
+        val failed = vm.queueOutgoingTextMessage(42L, "12:00", isTransportConnected = false)!!
+        assertEquals(1, vm.uiState.value.messages.size)
+        vm.cancelFailedMessage(failed.localId)
+        assertTrue(vm.uiState.value.messages.isEmpty())
+
+        // Load history and verify serverId chronological ordering
+        vm.loadInitialHistory("http://localhost:8080", "tok", currentUserId = 42L, limit = 2)
+        val ids = vm.uiState.value.messages.mapNotNull { it.serverId }
+        assertEquals(ids.sorted(), ids)
+    }
+
     private class FakeChatRealtimeTransport : ChatRealtimeTransport {
         val connectionStateFlow = MutableStateFlow(WsConnectionState.DISCONNECTED)
         val eventsFlow = MutableSharedFlow<ChatServerEvent>(extraBufferCapacity = 16)
