@@ -26,5 +26,9 @@ class CallViewModelTest {
         viewModel.toggleCamera()
         assertEquals(CallPhase.CONNECTED, viewModel.uiState.value.phase)
         assertEquals(false, viewModel.uiState.value.cameraEnabled)
+        viewModel.onTransportLost()
+        assertEquals(CallPhase.RECONNECTING, viewModel.uiState.value.phase)
+        viewModel.markConnected()
+        assertEquals(CallPhase.CONNECTED, viewModel.uiState.value.phase)
     }
 }
