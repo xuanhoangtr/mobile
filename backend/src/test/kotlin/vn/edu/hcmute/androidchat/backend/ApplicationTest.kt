@@ -4,8 +4,10 @@ import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
 import io.ktor.client.plugins.websocket.WebSockets as ClientWebSockets
 import io.ktor.client.plugins.websocket.webSocket
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.patch
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
@@ -154,7 +156,11 @@ class ApplicationTest {
                 assertEquals("READ", receiptResp["payload"]?.jsonObject?.get("status")?.jsonPrimitive?.content)
             }
 
-            // Peer 99 must have received message.created, typing, and receipt
+            // Peer 99 receives presence ONLINE for user 42, then message.created, typing, and receipt
+            val memberPresence = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
+            assertEquals("presence", memberPresence["type"]?.jsonPrimitive?.content)
+            assertEquals("ONLINE", memberPresence["payload"]?.jsonObject?.get("status")?.jsonPrimitive?.content)
+
             val peerCreated = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
             assertEquals("message.created", peerCreated["type"]?.jsonPrimitive?.content)
             assertEquals("Hello Ktor WS", peerCreated["payload"]?.jsonObject?.get("content")?.jsonPrimitive?.content)
@@ -263,5 +269,103 @@ class ApplicationTest {
         assertEquals(false, page3["hasMore"]!!.jsonPrimitive.boolean)
         val items3 = page3["items"]!!.jsonArray.map { it.jsonObject["content"]!!.jsonPrimitive.content }
         assertEquals(listOf("msg-1"), items3)
+    }
+
+    @Test
+    fun groupChatCreationRequiresThreeMembersAndEnforcesPermissions() = testApplication {
+        val repo = InMemoryChatRepository()
+        application { module(testConfig, chatRepositoryOverride = repo) }
+
+        val tokenOwner = issueTestToken(1L)
+        val tokenAdminCandidate = issueTestToken(2L)
+        val tokenMember = issueTestToken(3L)
+        val tokenNewbie = issueTestToken(4L)
+
+        // Fewer than 3 members -> 400
+        val tooSmall = client.post("/conversations/group") {
+            header(HttpHeaders.Authorization, "Bearer $tokenOwner")
+            contentType(ContentType.Application.Json)
+            setBody("""{"name":"Tiny","memberIds":[2]}""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, tooSmall.status)
+
+        // Create group with 3 members (1, 2, 3) -> 201 Created
+        val created = client.post("/conversations/group") {
+            header(HttpHeaders.Authorization, "Bearer $tokenOwner")
+            contentType(ContentType.Application.Json)
+            setBody("""{"name":"Android UTE","memberIds":[2,3]}""")
+        }
+        assertEquals(HttpStatusCode.Created, created.status)
+        val groupId = AppJson.parseToJsonElement(created.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.long
+
+        // Regular MEMBER (3) cannot add member (4) -> 403
+        val forbiddenAdd = client.post("/conversations/$groupId/members") {
+            header(HttpHeaders.Authorization, "Bearer $tokenMember")
+            contentType(ContentType.Application.Json)
+            setBody("""{"userIds":[4]}""")
+        }
+        assertEquals(HttpStatusCode.Forbidden, forbiddenAdd.status)
+
+        // OWNER (1) promotes user 2 to ADMIN -> 200
+        val promoteResp = client.patch("/conversations/$groupId/members/2") {
+            header(HttpHeaders.Authorization, "Bearer $tokenOwner")
+            contentType(ContentType.Application.Json)
+            setBody("""{"role":"ADMIN"}""")
+        }
+        assertEquals(HttpStatusCode.OK, promoteResp.status)
+        assertEquals("ADMIN", AppJson.parseToJsonElement(promoteResp.bodyAsText()).jsonObject["role"]?.jsonPrimitive?.content)
+
+        // ADMIN (2) adds user 4 -> 200
+        val addResp = client.post("/conversations/$groupId/members") {
+            header(HttpHeaders.Authorization, "Bearer $tokenAdminCandidate")
+            contentType(ContentType.Application.Json)
+            setBody("""{"userIds":[4]}""")
+        }
+        assertEquals(HttpStatusCode.OK, addResp.status)
+        assertEquals(4, AppJson.parseToJsonElement(addResp.bodyAsText()).jsonArray.size)
+
+        // ADMIN (2) cannot remove OWNER (1) -> 403
+        val removeOwner = client.delete("/conversations/$groupId/members/1") {
+            header(HttpHeaders.Authorization, "Bearer $tokenAdminCandidate")
+        }
+        assertEquals(HttpStatusCode.Forbidden, removeOwner.status)
+
+        // ADMIN (2) removes MEMBER (3) -> 204
+        val removeMember = client.delete("/conversations/$groupId/members/3") {
+            header(HttpHeaders.Authorization, "Bearer $tokenAdminCandidate")
+        }
+        assertEquals(HttpStatusCode.NoContent, removeMember.status)
+
+        // MEMBER (4) leaves self -> 204
+        val selfLeave = client.delete("/conversations/$groupId/members/4") {
+            header(HttpHeaders.Authorization, "Bearer $tokenNewbie")
+        }
+        assertEquals(HttpStatusCode.NoContent, selfLeave.status)
+    }
+
+    @Test
+    fun webSocketEnforcesMonotonicReceiptsFromReadToDelivered() = testApplication {
+        val repo = InMemoryChatRepository().apply {
+            seedConversation(conversationId = 101L, memberIds = setOf(42L, 99L))
+        }
+        application { module(testConfig, chatRepositoryOverride = repo) }
+        val token42 = issueTestToken(42L)
+
+        val wsClient = createClient { install(ClientWebSockets) }
+        wsClient.webSocket("/ws/chat", request = {
+            header(HttpHeaders.Authorization, "Bearer $token42")
+        }) {
+            // Presence ONLINE
+            incoming.receive()
+
+            send(Frame.Text("""{"type":"receipt","requestId":"r1","timestamp":"2026-11-13T11:30:00Z","payload":{"conversationId":101,"messageId":55,"status":"READ"}}"""))
+            val first = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
+            assertEquals("READ", first["payload"]?.jsonObject?.get("status")?.jsonPrimitive?.content)
+
+            // Sending DELIVERED after READ must NOT downgrade READ -> DELIVERED
+            send(Frame.Text("""{"type":"receipt","requestId":"r2","timestamp":"2026-11-13T11:30:01Z","payload":{"conversationId":101,"messageId":55,"status":"DELIVERED"}}"""))
+            val second = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
+            assertEquals("READ", second["payload"]?.jsonObject?.get("status")?.jsonPrimitive?.content)
+        }
     }
 }

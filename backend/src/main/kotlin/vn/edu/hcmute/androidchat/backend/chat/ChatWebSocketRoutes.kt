@@ -30,16 +30,21 @@ private val wsLogger = LoggerFactory.getLogger("ChatWebSocket")
 class ChatSessionRegistry {
     private val sessionsByUser = ConcurrentHashMap<Long, MutableSet<DefaultWebSocketServerSession>>()
 
-    fun register(userId: Long, session: DefaultWebSocketServerSession) {
-        sessionsByUser.computeIfAbsent(userId) { ConcurrentHashMap.newKeySet() }.add(session)
+    fun register(userId: Long, session: DefaultWebSocketServerSession): Boolean {
+        val set = sessionsByUser.computeIfAbsent(userId) { ConcurrentHashMap.newKeySet() }
+        val wasEmpty = set.isEmpty()
+        set.add(session)
+        return wasEmpty
     }
 
-    fun unregister(userId: Long, session: DefaultWebSocketServerSession) {
-        val set = sessionsByUser[userId] ?: return
+    fun unregister(userId: Long, session: DefaultWebSocketServerSession): Boolean {
+        val set = sessionsByUser[userId] ?: return false
         set.remove(session)
         if (set.isEmpty()) {
             sessionsByUser.remove(userId, set)
+            return true
         }
+        return false
     }
 
     suspend inline fun <reified T> broadcastToUsers(
@@ -85,19 +90,28 @@ fun Route.registerChatWebSocketRoutes(
                 return@webSocket
             }
 
-            sessions.register(userId, this)
+            val isFirstSession = sessions.register(userId, this)
             wsLogger.info("WebSocket connected for userId={}", userId)
 
             try {
-                sendEvent(
-                    type = "presence",
-                    requestId = null,
-                    payload = PresencePayload(
-                        userId = userId,
-                        status = "ONLINE",
-                        lastSeenAt = Instant.now().toString()
-                    )
+                val connectedAt = Instant.now().toString()
+                val onlinePresence = PresencePayload(
+                    userId = userId,
+                    status = "ONLINE",
+                    lastSeenAt = connectedAt
                 )
+                sendEvent(type = "presence", requestId = null, payload = onlinePresence)
+                if (isFirstSession) {
+                    val peers = repository.peerUserIdsFor(userId)
+                    if (peers.isNotEmpty()) {
+                        sessions.broadcastToUsers(
+                            userIds = peers,
+                            type = "presence",
+                            requestId = null,
+                            payload = onlinePresence
+                        )
+                    }
+                }
 
                 for (frame in incoming) {
                     if (frame !is Frame.Text) continue
@@ -109,7 +123,22 @@ fun Route.registerChatWebSocketRoutes(
                     )
                 }
             } finally {
-                sessions.unregister(userId, this)
+                val isLastSession = sessions.unregister(userId, this)
+                if (isLastSession) {
+                    val peers = runCatching { repository.peerUserIdsFor(userId) }.getOrDefault(emptySet())
+                    if (peers.isNotEmpty()) {
+                        sessions.broadcastToUsers(
+                            userIds = peers,
+                            type = "presence",
+                            requestId = null,
+                            payload = PresencePayload(
+                                userId = userId,
+                                status = "OFFLINE",
+                                lastSeenAt = Instant.now().toString()
+                            )
+                        )
+                    }
+                }
                 wsLogger.info("WebSocket disconnected for userId={}", userId)
             }
         }
@@ -228,12 +257,20 @@ private suspend fun DefaultWebSocketServerSession.handleReceipt(
         return
     }
 
+    val saved = when (val res = repository.saveReceipt(userId, payload.conversationId, payload.messageId, payload.status, nowIso)) {
+        is GroupOpResult.Ok -> res.value
+        is GroupOpResult.Err -> {
+            sendError(envelope.requestId, res.code, res.message)
+            return
+        }
+    }
+
     val recipients = members.ifEmpty { setOf(userId) }
     sessions.broadcastToUsers(
         userIds = recipients,
         type = "receipt",
         requestId = envelope.requestId,
-        payload = payload.copy(userId = userId, at = nowIso)
+        payload = saved
     )
 }
 

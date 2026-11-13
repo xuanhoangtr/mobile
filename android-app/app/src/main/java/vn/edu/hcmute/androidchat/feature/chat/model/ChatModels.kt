@@ -89,6 +89,8 @@ data class ChatRoomUiState(
     val messages: List<MessageUiModel> = emptyList(),
     val draftText: String = "",
     val typingUserNames: List<String> = emptyList(),
+    val isPeerOnline: Boolean = false,
+    val peerLastSeenAt: String? = null,
     val connectionState: WsConnectionState = WsConnectionState.DISCONNECTED,
     val errorMessage: String? = null
 )

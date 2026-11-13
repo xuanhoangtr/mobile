@@ -10,6 +10,31 @@ data class CreateDirectConversationRequest(
 )
 
 @Serializable
+data class CreateGroupConversationRequest(
+    val name: String,
+    val memberIds: List<Long>
+)
+
+@Serializable
+data class AddGroupMembersRequest(
+    val userIds: List<Long>
+)
+
+@Serializable
+data class UpdateMemberRoleRequest(
+    val role: String
+)
+
+@Serializable
+data class ConversationMemberDto(
+    val conversationId: Long,
+    val userId: Long,
+    val role: String,
+    val status: String,
+    val joinedAt: String
+)
+
+@Serializable
 data class ConversationSummaryDto(
     val id: Long,
     val type: String,

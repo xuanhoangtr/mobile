@@ -282,6 +282,35 @@ class ChatViewModelsTest {
         assertTrue(vm.uiState.value.conversations.any { it.id == 303L })
     }
 
+    @Test
+    fun chatRoomViewModelTracksPresenceAndEnforcesMonotonicReceiptStatus() = runTest {
+        val fakeTransport = FakeChatRealtimeTransport()
+        val vm = ChatRoomViewModel(transport = fakeTransport)
+
+        fakeTransport.connectionStateFlow.value = WsConnectionState.CONNECTED
+        vm.openConversation(conversationId = 101L, title = "Quang Huy", currentUserId = 42L)
+        vm.onDraftChanged("Status check")
+        val msg = vm.queueOutgoingTextMessage(currentUserId = 42L, createdAtLabel = "11:25")!!
+
+        fakeTransport.eventsFlow.emit(
+            ChatServerEvent.MessageAck(msg.clientMessageId, 101L, 777L, "ACCEPTED", "11:25:01")
+        )
+        fakeTransport.eventsFlow.emit(
+            ChatServerEvent.Receipt(101L, 777L, 99L, MessageDeliveryStatus.READ, "11:25:02")
+        )
+        // Downgrade attempt from READ -> DELIVERED must be ignored
+        fakeTransport.eventsFlow.emit(
+            ChatServerEvent.Receipt(101L, 777L, 99L, MessageDeliveryStatus.DELIVERED, "11:25:03")
+        )
+        assertEquals(MessageDeliveryStatus.READ, vm.uiState.value.messages.single().deliveryStatus)
+
+        fakeTransport.eventsFlow.emit(ChatServerEvent.Presence(99L, "ONLINE", "2026-11-13T11:25:04Z"))
+        assertTrue(vm.uiState.value.isPeerOnline)
+        fakeTransport.eventsFlow.emit(ChatServerEvent.Presence(99L, "OFFLINE", "2026-11-13T11:26:00Z"))
+        assertFalse(vm.uiState.value.isPeerOnline)
+        assertEquals("2026-11-13T11:26:00Z", vm.uiState.value.peerLastSeenAt)
+    }
+
     private class FakeChatRealtimeTransport : ChatRealtimeTransport {
         val connectionStateFlow = MutableStateFlow(WsConnectionState.DISCONNECTED)
         val eventsFlow = MutableSharedFlow<ChatServerEvent>(extraBufferCapacity = 16)
@@ -396,6 +425,38 @@ class ChatViewModelsTest {
             createdAt = "2026-11-13T11:0$id:00Z",
             deliveryStatus = MessageDeliveryStatus.DELIVERED
         )
+
+        override suspend fun createGroupConversation(
+            baseUrl: String,
+            accessToken: String,
+            name: String,
+            memberIds: List<Long>
+        ) = Result.failure<ConversationUiModel>(UnsupportedOperationException())
+
+        override suspend fun listGroupMembers(baseUrl: String, accessToken: String, conversationId: Long) =
+            Result.success(emptyList<vn.edu.hcmute.androidchat.feature.groups.model.GroupMemberUiModel>())
+
+        override suspend fun addGroupMembers(
+            baseUrl: String,
+            accessToken: String,
+            conversationId: Long,
+            userIds: List<Long>
+        ) = Result.success(emptyList<vn.edu.hcmute.androidchat.feature.groups.model.GroupMemberUiModel>())
+
+        override suspend fun updateGroupMemberRole(
+            baseUrl: String,
+            accessToken: String,
+            conversationId: Long,
+            targetUserId: Long,
+            role: vn.edu.hcmute.androidchat.feature.groups.model.GroupRole
+        ) = Result.failure<vn.edu.hcmute.androidchat.feature.groups.model.GroupMemberUiModel>(UnsupportedOperationException())
+
+        override suspend fun removeGroupMember(
+            baseUrl: String,
+            accessToken: String,
+            conversationId: Long,
+            targetUserId: Long
+        ) = Result.success(Unit)
     }
 
     private class FakeChatLocalCache : ChatLocalCache {

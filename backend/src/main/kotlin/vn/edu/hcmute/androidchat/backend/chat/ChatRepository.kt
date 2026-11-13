@@ -20,15 +20,53 @@ data class SaveMessageResult(
     val isMember: Boolean = true
 )
 
+sealed interface GroupOpResult<out T> {
+    data class Ok<T>(val value: T) : GroupOpResult<T>
+    data class Err(val statusCode: Int, val code: String, val message: String) : GroupOpResult<Nothing>
+}
+
 /**
  * Persistence contract for Conversation and Message storage (module CHAT).
  */
 interface ChatRepository {
     suspend fun listConversations(userId: Long, limit: Int): List<ConversationSummaryDto>
     suspend fun getOrCreateDirectConversation(userId: Long, targetUserId: Long, nowIso: String): ConversationSummaryDto
+    suspend fun createGroupConversation(
+        creatorId: Long,
+        name: String,
+        memberIds: List<Long>,
+        nowIso: String
+    ): GroupOpResult<ConversationSummaryDto>
+    suspend fun listMembers(requesterId: Long, conversationId: Long): GroupOpResult<List<ConversationMemberDto>>
+    suspend fun addMembers(
+        requesterId: Long,
+        conversationId: Long,
+        userIds: List<Long>,
+        nowIso: String
+    ): GroupOpResult<List<ConversationMemberDto>>
+    suspend fun updateMemberRole(
+        requesterId: Long,
+        conversationId: Long,
+        targetUserId: Long,
+        newRole: String
+    ): GroupOpResult<ConversationMemberDto>
+    suspend fun removeMember(
+        requesterId: Long,
+        conversationId: Long,
+        targetUserId: Long,
+        nowIso: String
+    ): GroupOpResult<Unit>
+    suspend fun saveReceipt(
+        userId: Long,
+        conversationId: Long,
+        messageId: Long,
+        status: String,
+        nowIso: String
+    ): GroupOpResult<ReceiptPayload>
     suspend fun listMessages(userId: Long, conversationId: Long, cursor: Long? = null, limit: Int = 30): CursorPage<MessageDto>?
     suspend fun saveMessage(senderId: Long, payload: MessageSendPayload, nowIso: String): SaveMessageResult
     suspend fun activeMemberIds(conversationId: Long): Set<Long>
+    suspend fun peerUserIdsFor(userId: Long): Set<Long>
 }
 
 /**
@@ -300,6 +338,304 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
         }
     }
 
+    override suspend fun peerUserIdsFor(userId: Long): Set<Long> = withContext(Dispatchers.IO) {
+        val sql = """
+            SELECT DISTINCT cm2.user_id
+            FROM conversation_members cm1
+            JOIN conversation_members cm2 ON cm1.conversation_id = cm2.conversation_id
+            WHERE cm1.user_id = ? AND cm1.status = 'ACTIVE' AND cm2.status = 'ACTIVE' AND cm2.user_id <> ?
+        """.trimIndent()
+        dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { stmt ->
+                stmt.setLong(1, userId)
+                stmt.setLong(2, userId)
+                stmt.executeQuery().use { rs ->
+                    val ids = mutableSetOf<Long>()
+                    while (rs.next()) ids += rs.getLong("user_id")
+                    ids
+                }
+            }
+        }
+    }
+
+    override suspend fun createGroupConversation(
+        creatorId: Long,
+        name: String,
+        memberIds: List<Long>,
+        nowIso: String
+    ): GroupOpResult<ConversationSummaryDto> = withContext(Dispatchers.IO) {
+        val trimmedName = name.trim()
+        val uniqueMembers = (memberIds.filter { it > 0L } + creatorId).toSet()
+        if (trimmedName.isEmpty() || uniqueMembers.size < 3) {
+            return@withContext GroupOpResult.Err(
+                400,
+                "VALIDATION_ERROR",
+                "Group name is required and at least 3 members (including creator) are needed"
+            )
+        }
+        val timestamp = Timestamp.from(Instant.parse(nowIso))
+        dataSource.connection.use { conn ->
+            val previousAutoCommit = conn.autoCommit
+            conn.autoCommit = false
+            try {
+                val convSql = """
+                    INSERT INTO conversations (type, name, created_by, created_at, updated_at)
+                    VALUES ('GROUP', ?, ?, ?, ?)
+                    RETURNING id
+                """.trimIndent()
+                val convId = conn.prepareStatement(convSql).use { stmt ->
+                    stmt.setString(1, trimmedName)
+                    stmt.setLong(2, creatorId)
+                    stmt.setTimestamp(3, timestamp)
+                    stmt.setTimestamp(4, timestamp)
+                    stmt.executeQuery().use { rs -> rs.next(); rs.getLong("id") }
+                }
+
+                val memberSql = """
+                    INSERT INTO conversation_members (conversation_id, user_id, role, status, joined_at)
+                    VALUES (?, ?, ?, 'ACTIVE', ?)
+                """.trimIndent()
+                for (memberId in uniqueMembers) {
+                    conn.prepareStatement(memberSql).use { stmt ->
+                        stmt.setLong(1, convId)
+                        stmt.setLong(2, memberId)
+                        stmt.setString(3, if (memberId == creatorId) "OWNER" else "MEMBER")
+                        stmt.setTimestamp(4, timestamp)
+                        stmt.executeUpdate()
+                    }
+                }
+                conn.commit()
+                GroupOpResult.Ok(
+                    ConversationSummaryDto(
+                        id = convId,
+                        type = "GROUP",
+                        name = trimmedName,
+                        updatedAt = nowIso
+                    )
+                )
+            } catch (ex: Exception) {
+                conn.rollback()
+                throw ex
+            } finally {
+                conn.autoCommit = previousAutoCommit
+            }
+        }
+    }
+
+    override suspend fun listMembers(
+        requesterId: Long,
+        conversationId: Long
+    ): GroupOpResult<List<ConversationMemberDto>> = withContext(Dispatchers.IO) {
+        dataSource.connection.use { conn ->
+            if (!isActiveMember(conn, conversationId, requesterId)) {
+                return@withContext GroupOpResult.Err(403, "FORBIDDEN", "User is not an active member of this conversation")
+            }
+            val sql = """
+                SELECT conversation_id, user_id, role, status, joined_at
+                FROM conversation_members
+                WHERE conversation_id = ? AND status = 'ACTIVE'
+                ORDER BY joined_at ASC
+            """.trimIndent()
+            conn.prepareStatement(sql).use { stmt ->
+                stmt.setLong(1, conversationId)
+                stmt.executeQuery().use { rs ->
+                    val list = mutableListOf<ConversationMemberDto>()
+                    while (rs.next()) {
+                        list += ConversationMemberDto(
+                            conversationId = rs.getLong("conversation_id"),
+                            userId = rs.getLong("user_id"),
+                            role = rs.getString("role"),
+                            status = rs.getString("status"),
+                            joinedAt = rs.getTimestamp("joined_at").toInstant().toString()
+                        )
+                    }
+                    GroupOpResult.Ok(list)
+                }
+            }
+        }
+    }
+
+    override suspend fun addMembers(
+        requesterId: Long,
+        conversationId: Long,
+        userIds: List<Long>,
+        nowIso: String
+    ): GroupOpResult<List<ConversationMemberDto>> = withContext(Dispatchers.IO) {
+        val validIds = userIds.filter { it > 0L }.distinct()
+        if (validIds.isEmpty()) {
+            return@withContext GroupOpResult.Err(400, "VALIDATION_ERROR", "At least one valid userId is required")
+        }
+        val timestamp = Timestamp.from(Instant.parse(nowIso))
+        dataSource.connection.use { conn ->
+            val requesterRole = activeMemberRole(conn, conversationId, requesterId)
+                ?: return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+            if (requesterRole != "OWNER" && requesterRole != "ADMIN") {
+                return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Only OWNER or ADMIN can add members")
+            }
+            val sql = """
+                INSERT INTO conversation_members (conversation_id, user_id, role, status, joined_at, left_at)
+                VALUES (?, ?, 'MEMBER', 'ACTIVE', ?, NULL)
+                ON CONFLICT (conversation_id, user_id) DO UPDATE
+                SET status = 'ACTIVE', left_at = NULL
+            """.trimIndent()
+            for (targetId in validIds) {
+                conn.prepareStatement(sql).use { stmt ->
+                    stmt.setLong(1, conversationId)
+                    stmt.setLong(2, targetId)
+                    stmt.setTimestamp(3, timestamp)
+                    stmt.executeUpdate()
+                }
+            }
+        }
+        listMembers(requesterId, conversationId)
+    }
+
+    override suspend fun updateMemberRole(
+        requesterId: Long,
+        conversationId: Long,
+        targetUserId: Long,
+        newRole: String
+    ): GroupOpResult<ConversationMemberDto> = withContext(Dispatchers.IO) {
+        val normalizedRole = newRole.uppercase()
+        if (normalizedRole != "ADMIN" && normalizedRole != "MEMBER") {
+            return@withContext GroupOpResult.Err(400, "VALIDATION_ERROR", "Role must be ADMIN or MEMBER")
+        }
+        dataSource.connection.use { conn ->
+            val requesterRole = activeMemberRole(conn, conversationId, requesterId)
+                ?: return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+            if (requesterRole != "OWNER") {
+                return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Only OWNER can change member roles")
+            }
+            if (targetUserId == requesterId) {
+                return@withContext GroupOpResult.Err(400, "VALIDATION_ERROR", "OWNER cannot demote self")
+            }
+            val sql = """
+                UPDATE conversation_members
+                SET role = ?
+                WHERE conversation_id = ? AND user_id = ? AND status = 'ACTIVE'
+                RETURNING conversation_id, user_id, role, status, joined_at
+            """.trimIndent()
+            conn.prepareStatement(sql).use { stmt ->
+                stmt.setString(1, normalizedRole)
+                stmt.setLong(2, conversationId)
+                stmt.setLong(3, targetUserId)
+                stmt.executeQuery().use { rs ->
+                    if (!rs.next()) {
+                        return@withContext GroupOpResult.Err(404, "NOT_FOUND", "Target member not found")
+                    }
+                    GroupOpResult.Ok(
+                        ConversationMemberDto(
+                            conversationId = rs.getLong("conversation_id"),
+                            userId = rs.getLong("user_id"),
+                            role = rs.getString("role"),
+                            status = rs.getString("status"),
+                            joinedAt = rs.getTimestamp("joined_at").toInstant().toString()
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    override suspend fun removeMember(
+        requesterId: Long,
+        conversationId: Long,
+        targetUserId: Long,
+        nowIso: String
+    ): GroupOpResult<Unit> = withContext(Dispatchers.IO) {
+        val timestamp = Timestamp.from(Instant.parse(nowIso))
+        dataSource.connection.use { conn ->
+            val requesterRole = activeMemberRole(conn, conversationId, requesterId)
+                ?: return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+            val targetRole = activeMemberRole(conn, conversationId, targetUserId)
+                ?: return@withContext GroupOpResult.Err(404, "NOT_FOUND", "Target member not found")
+
+            val allowed = when {
+                requesterId == targetUserId -> requesterRole != "OWNER"
+                requesterRole == "OWNER" -> targetRole != "OWNER"
+                requesterRole == "ADMIN" -> targetRole == "MEMBER"
+                else -> false
+            }
+            if (!allowed) {
+                return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Insufficient permission to remove member")
+            }
+
+            val nextStatus = if (requesterId == targetUserId) "LEFT" else "REMOVED"
+            val sql = """
+                UPDATE conversation_members
+                SET status = ?, left_at = ?
+                WHERE conversation_id = ? AND user_id = ? AND status = 'ACTIVE'
+            """.trimIndent()
+            conn.prepareStatement(sql).use { stmt ->
+                stmt.setString(1, nextStatus)
+                stmt.setTimestamp(2, timestamp)
+                stmt.setLong(3, conversationId)
+                stmt.setLong(4, targetUserId)
+                stmt.executeUpdate()
+            }
+            GroupOpResult.Ok(Unit)
+        }
+    }
+
+    override suspend fun saveReceipt(
+        userId: Long,
+        conversationId: Long,
+        messageId: Long,
+        status: String,
+        nowIso: String
+    ): GroupOpResult<ReceiptPayload> = withContext(Dispatchers.IO) {
+        val normalized = status.uppercase()
+        if (normalized != "DELIVERED" && normalized != "READ") {
+            return@withContext GroupOpResult.Err(400, "VALIDATION_ERROR", "Receipt status must be DELIVERED or READ")
+        }
+        val timestamp = Timestamp.from(Instant.parse(nowIso))
+        dataSource.connection.use { conn ->
+            if (!isActiveMember(conn, conversationId, userId)) {
+                return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+            }
+            val upsertSql = """
+                INSERT INTO message_receipts (message_id, recipient_id, delivered_at, read_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (message_id, recipient_id) DO UPDATE
+                SET delivered_at = COALESCE(message_receipts.delivered_at, EXCLUDED.delivered_at),
+                    read_at = COALESCE(message_receipts.read_at, EXCLUDED.read_at)
+                RETURNING read_at, delivered_at
+            """.trimIndent()
+            val finalStatus = conn.prepareStatement(upsertSql).use { stmt ->
+                stmt.setLong(1, messageId)
+                stmt.setLong(2, userId)
+                stmt.setTimestamp(3, timestamp)
+                if (normalized == "READ") stmt.setTimestamp(4, timestamp) else stmt.setNull(4, java.sql.Types.TIMESTAMP)
+                stmt.executeQuery().use { rs ->
+                    rs.next()
+                    if (rs.getTimestamp("read_at") != null) "READ" else "DELIVERED"
+                }
+            }
+            GroupOpResult.Ok(
+                ReceiptPayload(
+                    conversationId = conversationId,
+                    messageId = messageId,
+                    userId = userId,
+                    status = finalStatus,
+                    at = nowIso
+                )
+            )
+        }
+    }
+
+    private fun activeMemberRole(conn: java.sql.Connection, conversationId: Long, userId: Long): String? {
+        val sql = """
+            SELECT role FROM conversation_members
+            WHERE conversation_id = ? AND user_id = ? AND status = 'ACTIVE'
+            LIMIT 1
+        """.trimIndent()
+        conn.prepareStatement(sql).use { stmt ->
+            stmt.setLong(1, conversationId)
+            stmt.setLong(2, userId)
+            stmt.executeQuery().use { return if (it.next()) it.getString("role") else null }
+        }
+    }
+
     private fun isActiveMember(conn: java.sql.Connection, conversationId: Long, userId: Long): Boolean {
         val sql = """
             SELECT 1 FROM conversation_members
@@ -321,6 +657,8 @@ class InMemoryChatRepository : ChatRepository {
     private val conversations = ConcurrentHashMap<Long, ConversationSummaryDto>()
     private val directPairIndex = ConcurrentHashMap<String, Long>()
     private val membersByConversation = ConcurrentHashMap<Long, MutableSet<Long>>()
+    private val memberRolesByConversation = ConcurrentHashMap<Long, ConcurrentHashMap<Long, ConversationMemberDto>>()
+    private val receiptsByMessageUser = ConcurrentHashMap<String, String>()
     private val messagesByConversation = ConcurrentHashMap<Long, CopyOnWriteArrayList<MessageDto>>()
     private val dedupIndex = ConcurrentHashMap<String, MessageDto>()
     private val nextConversationId = AtomicLong(1000L)
@@ -478,4 +816,186 @@ class InMemoryChatRepository : ChatRepository {
 
     override suspend fun activeMemberIds(conversationId: Long): Set<Long> =
         membersByConversation[conversationId]?.toSet() ?: emptySet()
+
+    override suspend fun peerUserIdsFor(userId: Long): Set<Long> {
+        val peers = mutableSetOf<Long>()
+        for ((_, members) in membersByConversation) {
+            if (userId in members) {
+                peers.addAll(members)
+            }
+        }
+        peers.remove(userId)
+        return peers
+    }
+
+    override suspend fun createGroupConversation(
+        creatorId: Long,
+        name: String,
+        memberIds: List<Long>,
+        nowIso: String
+    ): GroupOpResult<ConversationSummaryDto> {
+        val trimmedName = name.trim()
+        val uniqueMembers = (memberIds.filter { it > 0L } + creatorId).toSet()
+        if (trimmedName.isEmpty() || uniqueMembers.size < 3) {
+            return GroupOpResult.Err(
+                400,
+                "VALIDATION_ERROR",
+                "Group name is required and at least 3 members (including creator) are needed"
+            )
+        }
+        val convId = nextConversationId.getAndIncrement()
+        val summary = ConversationSummaryDto(
+            id = convId,
+            type = "GROUP",
+            name = trimmedName,
+            updatedAt = nowIso
+        )
+        conversations[convId] = summary
+        membersByConversation[convId] = ConcurrentHashMap.newKeySet<Long>().apply { addAll(uniqueMembers) }
+        val roles = ConcurrentHashMap<Long, ConversationMemberDto>()
+        for (memberId in uniqueMembers) {
+            roles[memberId] = ConversationMemberDto(
+                conversationId = convId,
+                userId = memberId,
+                role = if (memberId == creatorId) "OWNER" else "MEMBER",
+                status = "ACTIVE",
+                joinedAt = nowIso
+            )
+        }
+        memberRolesByConversation[convId] = roles
+        return GroupOpResult.Ok(summary)
+    }
+
+    override suspend fun listMembers(
+        requesterId: Long,
+        conversationId: Long
+    ): GroupOpResult<List<ConversationMemberDto>> {
+        val members = membersByConversation[conversationId]
+        if (members == null || requesterId !in members) {
+            return GroupOpResult.Err(403, "FORBIDDEN", "User is not an active member of this conversation")
+        }
+        val roleMap = memberRolesByConversation[conversationId]
+        val items = members.map { uid ->
+            roleMap?.get(uid) ?: ConversationMemberDto(
+                conversationId = conversationId,
+                userId = uid,
+                role = "MEMBER",
+                status = "ACTIVE",
+                joinedAt = conversations[conversationId]?.updatedAt ?: ""
+            )
+        }
+        return GroupOpResult.Ok(items)
+    }
+
+    override suspend fun addMembers(
+        requesterId: Long,
+        conversationId: Long,
+        userIds: List<Long>,
+        nowIso: String
+    ): GroupOpResult<List<ConversationMemberDto>> {
+        val validIds = userIds.filter { it > 0L }.distinct()
+        if (validIds.isEmpty()) {
+            return GroupOpResult.Err(400, "VALIDATION_ERROR", "At least one valid userId is required")
+        }
+        val roles = memberRolesByConversation[conversationId]
+        val requesterRole = roles?.get(requesterId)?.role
+        if (requesterRole != "OWNER" && requesterRole != "ADMIN") {
+            return GroupOpResult.Err(403, "FORBIDDEN", "Only OWNER or ADMIN can add members")
+        }
+        val members = membersByConversation.computeIfAbsent(conversationId) { ConcurrentHashMap.newKeySet() }
+        for (uid in validIds) {
+            if (members.add(uid)) {
+                roles[uid] = ConversationMemberDto(
+                    conversationId = conversationId,
+                    userId = uid,
+                    role = "MEMBER",
+                    status = "ACTIVE",
+                    joinedAt = nowIso
+                )
+            }
+        }
+        return listMembers(requesterId, conversationId)
+    }
+
+    override suspend fun updateMemberRole(
+        requesterId: Long,
+        conversationId: Long,
+        targetUserId: Long,
+        newRole: String
+    ): GroupOpResult<ConversationMemberDto> {
+        val normalizedRole = newRole.uppercase()
+        if (normalizedRole != "ADMIN" && normalizedRole != "MEMBER") {
+            return GroupOpResult.Err(400, "VALIDATION_ERROR", "Role must be ADMIN or MEMBER")
+        }
+        val roles = memberRolesByConversation[conversationId]
+            ?: return GroupOpResult.Err(404, "NOT_FOUND", "Conversation not found")
+        if (roles[requesterId]?.role != "OWNER") {
+            return GroupOpResult.Err(403, "FORBIDDEN", "Only OWNER can change member roles")
+        }
+        if (targetUserId == requesterId) {
+            return GroupOpResult.Err(400, "VALIDATION_ERROR", "OWNER cannot demote self")
+        }
+        val existing = roles[targetUserId]
+            ?: return GroupOpResult.Err(404, "NOT_FOUND", "Target member not found")
+        val updated = existing.copy(role = normalizedRole)
+        roles[targetUserId] = updated
+        return GroupOpResult.Ok(updated)
+    }
+
+    override suspend fun removeMember(
+        requesterId: Long,
+        conversationId: Long,
+        targetUserId: Long,
+        nowIso: String
+    ): GroupOpResult<Unit> {
+        val roles = memberRolesByConversation[conversationId]
+            ?: return GroupOpResult.Err(404, "NOT_FOUND", "Conversation not found")
+        val requesterRole = roles[requesterId]?.role
+            ?: return GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+        val targetRole = roles[targetUserId]?.role
+            ?: return GroupOpResult.Err(404, "NOT_FOUND", "Target member not found")
+
+        val allowed = when {
+            requesterId == targetUserId -> requesterRole != "OWNER"
+            requesterRole == "OWNER" -> targetRole != "OWNER"
+            requesterRole == "ADMIN" -> targetRole == "MEMBER"
+            else -> false
+        }
+        if (!allowed) {
+            return GroupOpResult.Err(403, "FORBIDDEN", "Insufficient permission to remove member")
+        }
+        membersByConversation[conversationId]?.remove(targetUserId)
+        roles.remove(targetUserId)
+        return GroupOpResult.Ok(Unit)
+    }
+
+    override suspend fun saveReceipt(
+        userId: Long,
+        conversationId: Long,
+        messageId: Long,
+        status: String,
+        nowIso: String
+    ): GroupOpResult<ReceiptPayload> {
+        val normalized = status.uppercase()
+        if (normalized != "DELIVERED" && normalized != "READ") {
+            return GroupOpResult.Err(400, "VALIDATION_ERROR", "Receipt status must be DELIVERED or READ")
+        }
+        val members = membersByConversation[conversationId]
+        if (members != null && userId !in members) {
+            return GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+        }
+        val key = "$messageId:$userId"
+        val current = receiptsByMessageUser[key]
+        val finalStatus = if (current == "READ") "READ" else normalized
+        receiptsByMessageUser[key] = finalStatus
+        return GroupOpResult.Ok(
+            ReceiptPayload(
+                conversationId = conversationId,
+                messageId = messageId,
+                userId = userId,
+                status = finalStatus,
+                at = nowIso
+            )
+        )
+    }
 }

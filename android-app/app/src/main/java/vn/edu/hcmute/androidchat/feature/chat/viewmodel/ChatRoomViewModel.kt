@@ -301,6 +301,17 @@ class ChatRoomViewModel(
         _uiState.update { it.copy(errorMessage = null) }
     }
 
+    fun markMessageRead(messageId: Long): Boolean {
+        val activeTransport = transport ?: return false
+        val conversationId = _uiState.value.conversationId
+        if (conversationId <= 0L || messageId <= 0L) return false
+        return activeTransport.sendReceipt(
+            conversationId = conversationId,
+            messageId = messageId,
+            status = MessageDeliveryStatus.READ
+        )
+    }
+
     private fun handleServerEvent(event: ChatServerEvent) {
         val currentConversationId = _uiState.value.conversationId
         when (event) {
@@ -362,7 +373,7 @@ class ChatRoomViewModel(
                     state.copy(
                         messages = state.messages.map { msg ->
                             if (msg.serverId == event.messageId) {
-                                msg.copy(deliveryStatus = event.status)
+                                msg.copy(deliveryStatus = nextMonotonicStatus(msg.deliveryStatus, event.status))
                             } else {
                                 msg
                             }
@@ -370,6 +381,17 @@ class ChatRoomViewModel(
                     )
                 }
                 persistCurrentMessages()
+            }
+
+            is ChatServerEvent.Presence -> {
+                if (event.userId != activeCurrentUserId) {
+                    _uiState.update {
+                        it.copy(
+                            isPeerOnline = event.status.equals("ONLINE", ignoreCase = true),
+                            peerLastSeenAt = event.lastSeenAt
+                        )
+                    }
+                }
             }
 
             is ChatServerEvent.Error -> {
@@ -396,6 +418,23 @@ class ChatRoomViewModel(
             }
         }
         return byKey.values.toList()
+    }
+
+    private fun nextMonotonicStatus(
+        current: MessageDeliveryStatus,
+        incoming: MessageDeliveryStatus
+    ): MessageDeliveryStatus {
+        val currentRank = statusRank(current)
+        val incomingRank = statusRank(incoming)
+        return if (incomingRank >= currentRank) incoming else current
+    }
+
+    private fun statusRank(status: MessageDeliveryStatus): Int = when (status) {
+        MessageDeliveryStatus.FAILED -> 0
+        MessageDeliveryStatus.SENDING -> 1
+        MessageDeliveryStatus.ACCEPTED -> 2
+        MessageDeliveryStatus.DELIVERED -> 3
+        MessageDeliveryStatus.READ -> 4
     }
 
     private fun persistCurrentMessages() {

@@ -13,6 +13,8 @@ import vn.edu.hcmute.androidchat.feature.chat.model.ConversationUiModel
 import vn.edu.hcmute.androidchat.feature.chat.model.MessageDeliveryStatus
 import vn.edu.hcmute.androidchat.feature.chat.model.MessageType
 import vn.edu.hcmute.androidchat.feature.chat.model.MessageUiModel
+import vn.edu.hcmute.androidchat.feature.groups.model.GroupMemberUiModel
+import vn.edu.hcmute.androidchat.feature.groups.model.GroupRole
 import java.io.IOException
 
 data class CursorPageResult<T>(
@@ -43,6 +45,41 @@ interface ChatApiService {
         cursor: String? = null,
         limit: Int = 30
     ): Result<CursorPageResult<MessageUiModel>>
+
+    suspend fun createGroupConversation(
+        baseUrl: String,
+        accessToken: String,
+        name: String,
+        memberIds: List<Long>
+    ): Result<ConversationUiModel>
+
+    suspend fun listGroupMembers(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long
+    ): Result<List<GroupMemberUiModel>>
+
+    suspend fun addGroupMembers(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long,
+        userIds: List<Long>
+    ): Result<List<GroupMemberUiModel>>
+
+    suspend fun updateGroupMemberRole(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long,
+        targetUserId: Long,
+        role: GroupRole
+    ): Result<GroupMemberUiModel>
+
+    suspend fun removeGroupMember(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long,
+        targetUserId: Long
+    ): Result<Unit>
 }
 
 object ChatRestParser {
@@ -130,6 +167,29 @@ object ChatRestParser {
             root.optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() } ?: fallback
         }.getOrDefault(fallback)
     }
+
+    fun parseGroupMembers(rawJson: String): List<GroupMemberUiModel> {
+        val array = JSONArray(rawJson)
+        return buildList {
+            for (i in 0 until array.length()) {
+                add(parseGroupMember(array.getJSONObject(i)))
+            }
+        }
+    }
+
+    fun parseGroupMember(obj: JSONObject): GroupMemberUiModel {
+        val userId = obj.getLong("userId")
+        val roleName = obj.optString("role", "MEMBER")
+        val role = GroupRole.entries.firstOrNull { it.name.equals(roleName, ignoreCase = true) }
+            ?: GroupRole.MEMBER
+        val displayName = obj.optString("displayName").takeIf { it.isNotBlank() && it != "null" }
+            ?: "User #$userId"
+        return GroupMemberUiModel(
+            userId = userId,
+            displayName = displayName,
+            role = role
+        )
+    }
 }
 
 /**
@@ -202,6 +262,102 @@ class OkHttpChatApiService(
                 .build()
             val body = executeRequest(request)
             ChatRestParser.parseMessagesPage(body, currentUserId)
+        }
+    }
+
+    override suspend fun createGroupConversation(
+        baseUrl: String,
+        accessToken: String,
+        name: String,
+        memberIds: List<Long>
+    ): Result<ConversationUiModel> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanBase = baseUrl.trimEnd('/')
+            val payload = JSONObject()
+                .put("name", name)
+                .put("memberIds", JSONArray(memberIds))
+                .toString()
+            val request = Request.Builder()
+                .url("$cleanBase/conversations/group")
+                .header("Authorization", "Bearer $accessToken")
+                .post(payload.toRequestBody(jsonMediaType))
+                .build()
+            val body = executeRequest(request)
+            ChatRestParser.parseConversationSummary(JSONObject(body))
+        }
+    }
+
+    override suspend fun listGroupMembers(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long
+    ): Result<List<GroupMemberUiModel>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanBase = baseUrl.trimEnd('/')
+            val request = Request.Builder()
+                .url("$cleanBase/conversations/$conversationId/members")
+                .header("Authorization", "Bearer $accessToken")
+                .get()
+                .build()
+            val body = executeRequest(request)
+            ChatRestParser.parseGroupMembers(body)
+        }
+    }
+
+    override suspend fun addGroupMembers(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long,
+        userIds: List<Long>
+    ): Result<List<GroupMemberUiModel>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanBase = baseUrl.trimEnd('/')
+            val payload = JSONObject().put("userIds", JSONArray(userIds)).toString()
+            val request = Request.Builder()
+                .url("$cleanBase/conversations/$conversationId/members")
+                .header("Authorization", "Bearer $accessToken")
+                .post(payload.toRequestBody(jsonMediaType))
+                .build()
+            val body = executeRequest(request)
+            ChatRestParser.parseGroupMembers(body)
+        }
+    }
+
+    override suspend fun updateGroupMemberRole(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long,
+        targetUserId: Long,
+        role: GroupRole
+    ): Result<GroupMemberUiModel> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanBase = baseUrl.trimEnd('/')
+            val payload = JSONObject().put("role", role.name).toString()
+            val request = Request.Builder()
+                .url("$cleanBase/conversations/$conversationId/members/$targetUserId")
+                .header("Authorization", "Bearer $accessToken")
+                .patch(payload.toRequestBody(jsonMediaType))
+                .build()
+            val body = executeRequest(request)
+            ChatRestParser.parseGroupMember(JSONObject(body))
+        }
+    }
+
+    override suspend fun removeGroupMember(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long,
+        targetUserId: Long
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanBase = baseUrl.trimEnd('/')
+            val request = Request.Builder()
+                .url("$cleanBase/conversations/$conversationId/members/$targetUserId")
+                .header("Authorization", "Bearer $accessToken")
+                .delete()
+                .build()
+            executeRequest(request)
+            Unit
         }
     }
 

@@ -103,4 +103,19 @@ class ChatRestParserTest {
         assertEquals("Not a member", ChatRestParser.parseErrorMessage(raw, "fallback"))
         assertEquals("fallback", ChatRestParser.parseErrorMessage("invalid", "fallback"))
     }
+
+    @Test
+    fun parseGroupMembersMapsRolesAndFallbackDisplayName() {
+        val raw = """
+            [
+              {"conversationId":500,"userId":1,"role":"OWNER","status":"ACTIVE","joinedAt":"2026-11-13T11:00:00Z"},
+              {"conversationId":500,"userId":2,"role":"ADMIN","status":"ACTIVE","joinedAt":"2026-11-13T11:01:00Z"}
+            ]
+        """.trimIndent()
+        val members = ChatRestParser.parseGroupMembers(raw)
+        assertEquals(2, members.size)
+        assertEquals("OWNER", members[0].role.name)
+        assertEquals("User #2", members[1].displayName)
+        assertEquals("ADMIN", members[1].role.name)
+    }
 }

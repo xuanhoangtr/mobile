@@ -8,7 +8,9 @@ import io.ktor.server.auth.principal
 import io.ktor.server.request.receiveNullable
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
+import io.ktor.server.routing.patch
 import io.ktor.server.routing.post
 import java.time.Instant
 import vn.edu.hcmute.androidchat.backend.common.AUTH_JWT_NAME
@@ -60,6 +62,95 @@ fun Route.registerChatRoutes(repository: ChatRepository) {
                 nowIso = Instant.now().toString()
             )
             call.respond(HttpStatusCode.OK, conversation)
+        }
+
+        post("/conversations/group") {
+            val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
+                ?: return@post call.respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", "Invalid authenticated principal")
+
+            val body = runCatching { call.receiveNullable<CreateGroupConversationRequest>() }.getOrNull()
+                ?: return@post call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid request body")
+
+            when (val res = repository.createGroupConversation(
+                creatorId = userId,
+                name = body.name,
+                memberIds = body.memberIds,
+                nowIso = Instant.now().toString()
+            )) {
+                is GroupOpResult.Ok -> call.respond(HttpStatusCode.Created, res.value)
+                is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
+            }
+        }
+
+        get("/conversations/{id}/members") {
+            val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
+                ?: return@get call.respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", "Invalid authenticated principal")
+            val conversationId = call.parameters["id"]?.toLongOrNull()?.takeIf { it > 0L }
+                ?: return@get call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid conversation id")
+
+            when (val res = repository.listMembers(requesterId = userId, conversationId = conversationId)) {
+                is GroupOpResult.Ok -> call.respond(HttpStatusCode.OK, res.value)
+                is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
+            }
+        }
+
+        post("/conversations/{id}/members") {
+            val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
+                ?: return@post call.respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", "Invalid authenticated principal")
+            val conversationId = call.parameters["id"]?.toLongOrNull()?.takeIf { it > 0L }
+                ?: return@post call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid conversation id")
+            val body = runCatching { call.receiveNullable<AddGroupMembersRequest>() }.getOrNull()
+                ?: return@post call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid request body")
+
+            when (val res = repository.addMembers(
+                requesterId = userId,
+                conversationId = conversationId,
+                userIds = body.userIds,
+                nowIso = Instant.now().toString()
+            )) {
+                is GroupOpResult.Ok -> call.respond(HttpStatusCode.OK, res.value)
+                is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
+            }
+        }
+
+        patch("/conversations/{id}/members/{userId}") {
+            val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
+                ?: return@patch call.respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", "Invalid authenticated principal")
+            val conversationId = call.parameters["id"]?.toLongOrNull()?.takeIf { it > 0L }
+                ?: return@patch call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid conversation id")
+            val targetUserId = call.parameters["userId"]?.toLongOrNull()?.takeIf { it > 0L }
+                ?: return@patch call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid target user id")
+            val body = runCatching { call.receiveNullable<UpdateMemberRoleRequest>() }.getOrNull()
+                ?: return@patch call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid request body")
+
+            when (val res = repository.updateMemberRole(
+                requesterId = userId,
+                conversationId = conversationId,
+                targetUserId = targetUserId,
+                newRole = body.role
+            )) {
+                is GroupOpResult.Ok -> call.respond(HttpStatusCode.OK, res.value)
+                is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
+            }
+        }
+
+        delete("/conversations/{id}/members/{userId}") {
+            val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
+                ?: return@delete call.respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", "Invalid authenticated principal")
+            val conversationId = call.parameters["id"]?.toLongOrNull()?.takeIf { it > 0L }
+                ?: return@delete call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid conversation id")
+            val targetUserId = call.parameters["userId"]?.toLongOrNull()?.takeIf { it > 0L }
+                ?: return@delete call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid target user id")
+
+            when (val res = repository.removeMember(
+                requesterId = userId,
+                conversationId = conversationId,
+                targetUserId = targetUserId,
+                nowIso = Instant.now().toString()
+            )) {
+                is GroupOpResult.Ok -> call.respond(HttpStatusCode.NoContent)
+                is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
+            }
         }
 
         get("/conversations/{id}/messages") {
