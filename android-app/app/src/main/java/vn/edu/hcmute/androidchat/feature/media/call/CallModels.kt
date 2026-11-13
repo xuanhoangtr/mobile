@@ -1,7 +1,9 @@
 package vn.edu.hcmute.androidchat.feature.media.call
 
 enum class CallMedia { AUDIO, VIDEO }
-enum class CallPhase { IDLE, OUTGOING_RINGING, INCOMING_RINGING, CONNECTED, DECLINED, ENDED, ERROR }
+enum class CallPhase {
+    IDLE, OUTGOING_RINGING, INCOMING_RINGING, CONNECTED, RECONNECTING, DECLINED, ENDED, ERROR
+}
 
 data class CallUiState(
     val callId: String? = null,

@@ -31,8 +31,25 @@ class CallViewModel : ViewModel() {
     }
 
     fun markConnected() {
-        if (state.value.phase == CallPhase.OUTGOING_RINGING) {
+        if (state.value.phase == CallPhase.OUTGOING_RINGING ||
+            state.value.phase == CallPhase.RECONNECTING
+        ) {
             state.value = state.value.copy(phase = CallPhase.CONNECTED)
+        }
+    }
+
+    fun onTransportLost() {
+        if (state.value.phase == CallPhase.CONNECTED) {
+            state.value = state.value.copy(phase = CallPhase.RECONNECTING, error = "Connection lost")
+        }
+    }
+
+    fun onTimeout() {
+        if (state.value.phase == CallPhase.OUTGOING_RINGING ||
+            state.value.phase == CallPhase.INCOMING_RINGING ||
+            state.value.phase == CallPhase.RECONNECTING
+        ) {
+            state.value = state.value.copy(phase = CallPhase.ERROR, error = "Call timed out")
         }
     }
 
@@ -48,5 +65,9 @@ class CallViewModel : ViewModel() {
         if (state.value.phase != CallPhase.IDLE) {
             state.value = state.value.copy(phase = CallPhase.ENDED)
         }
+    }
+
+    override fun onCleared() {
+        end()
     }
 }

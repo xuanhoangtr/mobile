@@ -34,6 +34,11 @@ Không thay `docs/api-contract.md`, Message, schema CHAT/AUTH, WebSocket hay JWT
 | D23 | Chia sẻ vị trí + wallpaper conversation + video-call POC | DONE ở mức local state/UI; chưa có video transport |
 | D24 | Incoming/outgoing/decline và push incoming call boundary | PARTIAL — signaling states có; FCM incoming chưa tích hợp |
 | D25 | Màn hình call audio/video cơ bản và gate | PARTIAL — chưa thể gọi là WebRTC end-to-end |
+| D26 | Permission camera/micro, mute/camera/end và group-call POC | PARTIAL — có state/UI; chưa có media transport |
+| D27 | Reconnect/timeout/audio focus và kiểm thử ổn định | PARTIAL — state/audio-focus boundary có; chưa test mạng/thiết bị |
+| D28 | Đánh giá gọi nhóm ≥3 người | EXPERIMENTAL — chỉ có join/leave state, chưa có SFU/WebRTC |
+| D29 | Rà soát media/call, cleanup và test chéo | DONE ở mức local source/build/test; chưa review tích hợp ba nhánh |
+| D30 | Feature freeze MEDIA và bàn giao trạng thái | DONE local; không claim WebRTC/FCM production |
 
 Không báo upload PASS thành ảnh đã tới máy người nhận. Android không giả dữ liệu upload thành công: service mặc định luôn báo INTEGRATION_BLOCKED.
 
@@ -192,6 +197,17 @@ camera. Đây chỉ là signaling/state POC: chưa thêm WebRTC SDK, ICE/STUN/TU
 audio/video tracks hoặc FCM incoming-call delivery. Vì vậy D21–D25 chưa được
 claim là gọi audio/video 1–1 end-to-end; cần provider và test hai thiết bị
 trước khi bật trong bản tích hợp.
+
+D26–D30 bổ sung permission boundary cho microphone/camera, audio focus,
+timeout và trạng thái reconnect khi transport mất kết nối. Group-call chỉ có
+controller join/leave tối thiểu để đánh giá P2, không tạo media mesh/SFU và
+không coi ba participant là đã gọi được. Các màn hình/UI này không tự khởi
+động permission side effect ngoài callback đã được host kiểm soát.
+
+Đây là phạm vi khóa của MEDIA trước feature freeze: source, unit test, backend
+regression test và debug APK đều chạy local. Chưa thực hiện clip/demo thiết bị,
+TURN/NAT test, FCM incoming call, WebRTC tracks, group media hoặc tích hợp
+realtime với CHAT; các mục đó giữ trạng thái Partial/Experimental.
 
 ## Contract production đề xuất — BLOCKED
 
