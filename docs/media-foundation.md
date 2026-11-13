@@ -24,6 +24,11 @@ Không thay `docs/api-contract.md`, Message, schema CHAT/AUTH, WebSocket hay JWT
 | D13 | Audio upload và `VOICE` attachment metadata | DONE ở mức contract/dev adapter; CHAT wiring chờ owner CHAT |
 | D14 | Playback pause/resume/progress/duration và interruption | DONE ở mức source/unit test; audio focus/headset cần test thiết bị |
 | D15 | Bàn giao `voice-message-v1` | DONE local; chưa push/PR, chưa xác nhận thiết bị thứ hai |
+| D16 | Voice progress và nền tảng waveform nhẹ | DONE ở mức progress/state; chưa có waveform DSP và chưa test thiết bị |
+| D17 | Chọn nhiều ảnh, upload từng item và retry | DONE ở mức source/build/unit test; debug service chưa kết nối backend thật |
+| D18 | Đăng ký/hủy đăng ký push token | DONE ở mức authenticated provider-neutral API/unit test; chưa tích hợp FCM |
+| D19 | Sticker catalog, picker và attachment ổn định | DONE ở mức local catalog/unit test; CHAT wiring chờ owner CHAT |
+| D20 | Kiểm thử và bàn giao local | DONE local; chưa push/PR |
 
 Không báo upload PASS thành ảnh đã tới máy người nhận. Android không giả dữ liệu upload thành công: service mặc định luôn báo INTEGRATION_BLOCKED.
 
@@ -139,6 +144,28 @@ Recorder dùng `MediaRecorder` MPEG-4/AAC vào file tạm trong cache, xóa file
 hủy/lifecycle interruption. Playback dùng `MediaPlayer`, hỗ trợ pause/resume,
 progress và dừng khi Activity vào background. Việc kiểm chứng tai nghe/audio focus,
 microphone denial và phát trên thiết bị thứ hai vẫn cần test thiết bị thật.
+
+## MEDIA D16–D20
+
+Batch picker dùng `GetMultipleContents`, loại URI trùng nhưng giữ lỗi từng URI
+không đọc được. Mỗi item có phase, bytes đã gửi, kết quả upload hoặc lỗi riêng;
+retry chỉ chạy lại item lỗi và mở lại stream từ đầu. D16 hiển thị progress theo
+byte đã tiêu thụ, chưa tuyên bố là server ACK hoặc waveform âm thanh.
+
+Push token dùng `POST /devices/push-token` và
+`DELETE /devices/push-token/{deviceId}` với JWT, kiểm tra device ID/token và
+không trả token provider trong response. Registry hiện chỉ ở RAM cho môi trường
+dev; đây là boundary để host tích hợp FCM/APNs, không phải dịch vụ push hoàn
+chỉnh và không lưu secret provider.
+
+Sticker catalog hiện là danh sách local có ID ổn định, picker tạo attachment
+`STICKER` nhưng chưa tạo Message hoặc broadcast. CHAT phải chốt contract,
+quyền conversation và delivery trước khi nối vào realtime.
+
+Debug batch/sticker/push chỉ chứng minh state, validation và HTTP boundary.
+Android unit test, backend test và debug build đã chạy local; chưa kiểm thử
+picker, FCM, sticker/voice cross-device, tai nghe, waveform hoặc upload thật
+trên thiết bị.
 
 ## Contract production đề xuất — BLOCKED
 

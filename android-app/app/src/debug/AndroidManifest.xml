@@ -16,5 +16,10 @@
             android:exported="true"
             android:label="Voice message debug"
             android:theme="@style/Theme.AndroidChat" />
+        <activity
+            android:name=".feature.media.debug.BatchMediaDebugActivity"
+            android:exported="true"
+            android:label="Batch media debug"
+            android:theme="@style/Theme.AndroidChat" />
     </application>
 </manifest>
