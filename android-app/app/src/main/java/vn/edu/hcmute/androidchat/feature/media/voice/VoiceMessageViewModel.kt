@@ -10,12 +10,18 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
+import vn.edu.hcmute.androidchat.feature.media.data.FileMediaSource
+import vn.edu.hcmute.androidchat.feature.media.data.MediaRepository
+import vn.edu.hcmute.androidchat.feature.media.model.MediaError
+import vn.edu.hcmute.androidchat.feature.media.model.MediaException
+import vn.edu.hcmute.androidchat.feature.media.model.SelectedMedia
 
 class VoiceMessageViewModel(
     private val recorder: VoiceRecorder,
     private val playback: VoicePlayback,
     private val outputDirectory: File,
-    private val nowMs: () -> Long = System::currentTimeMillis
+    private val nowMs: () -> Long = System::currentTimeMillis,
+    private val mediaRepository: MediaRepository? = null
 ) : ViewModel() {
     private val state = MutableStateFlow(VoiceUiState())
     val uiState = state.asStateFlow()
@@ -68,18 +74,63 @@ class VoiceMessageViewModel(
         val path = current.filePath ?: return
         when (current.phase) {
             VoicePhase.PLAYING -> {
-                playback.stop()
-                state.update { it.copy(phase = VoicePhase.RECORDED) }
+                playback.pause()
+                timer?.cancel()
+                state.update { it.copy(phase = VoicePhase.PAUSED) }
+            }
+            VoicePhase.PAUSED -> {
+                playback.resume()
+                startPlaybackTimer()
+                state.update { it.copy(phase = VoicePhase.PLAYING) }
             }
             VoicePhase.RECORDED -> try {
                 playback.play(path) {
-                    state.update { if (it.filePath == path) it.copy(phase = VoicePhase.RECORDED) else it }
+                    timer?.cancel()
+                    state.update { if (it.filePath == path) it.copy(phase = VoicePhase.RECORDED, playbackPositionMs = 0L) else it }
                 }
+                startPlaybackTimer()
                 state.update { it.copy(phase = VoicePhase.PLAYING) }
             } catch (_: Exception) {
                 state.update { it.copy(phase = VoicePhase.ERROR, error = VoiceError.PLAYBACK_FAILED) }
             }
             else -> Unit
+        }
+    }
+
+    fun upload(conversationId: Long? = null) {
+        val path = state.value.filePath ?: return
+        val repository = mediaRepository ?: run {
+            state.update { it.copy(phase = VoicePhase.ERROR, error = VoiceError.UPLOAD_FAILED) }
+            return
+        }
+        if (state.value.phase == VoicePhase.UPLOADING || state.value.phase == VoicePhase.SENT) return
+        timer?.cancel()
+        state.update { it.copy(phase = VoicePhase.UPLOADING, error = null) }
+        viewModelScope.launch {
+            try {
+                val media = FileMediaSource().inspect(File(path).toURI().toString())
+                val uploaded = repository.upload(media, conversationId) {}
+                state.update {
+                    it.copy(
+                        phase = VoicePhase.SENT,
+                        attachment = VoiceAttachment(uploaded.mediaId, uploaded.mimeType, uploaded.byteSize, it.durationMs)
+                    )
+                }
+            } catch (_: Exception) {
+                state.update { it.copy(phase = VoicePhase.ERROR, error = VoiceError.UPLOAD_FAILED) }
+            }
+        }
+    }
+
+    fun interrupt() {
+        if (state.value.phase == VoicePhase.RECORDING) {
+            recorder.cancel()
+            state.value.filePath?.let(::File)?.delete()
+            state.value = VoiceUiState()
+        } else if (state.value.phase == VoicePhase.PLAYING) {
+            playback.pause()
+            timer?.cancel()
+            state.update { it.copy(phase = VoicePhase.PAUSED) }
         }
     }
 
@@ -93,5 +144,19 @@ class VoiceMessageViewModel(
 
     override fun onCleared() {
         clear()
+    }
+
+    private fun startPlaybackTimer() {
+        timer?.cancel()
+        timer = viewModelScope.launch {
+            while (isActive) {
+                delay(200)
+                state.update { current ->
+                    if (current.phase == VoicePhase.PLAYING) {
+                        current.copy(playbackPositionMs = (current.playbackPositionMs + 200L).coerceAtMost(current.durationMs))
+                    } else current
+                }
+            }
+        }
     }
 }

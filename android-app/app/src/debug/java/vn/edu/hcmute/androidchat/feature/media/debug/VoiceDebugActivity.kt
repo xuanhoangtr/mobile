@@ -2,28 +2,25 @@ package vn.edu.hcmute.androidchat.feature.media.debug
 
 import android.Manifest
 import android.os.Bundle
+import android.content.pm.PackageManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Text
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import vn.edu.hcmute.androidchat.feature.media.voice.AndroidVoicePlayback
 import vn.edu.hcmute.androidchat.feature.media.voice.AndroidVoiceRecorder
 import vn.edu.hcmute.androidchat.feature.media.voice.VoiceMessageViewModel
-import vn.edu.hcmute.androidchat.feature.media.voice.VoicePhase
+import vn.edu.hcmute.androidchat.feature.media.voice.VoiceMessageScreen
 import vn.edu.hcmute.androidchat.ui.theme.AndroidChatTheme
 
 class VoiceDebugActivity : ComponentActivity() {
@@ -34,7 +31,7 @@ class VoiceDebugActivity : ComponentActivity() {
                 @Suppress("UNCHECKED_CAST")
                 return VoiceMessageViewModel(
                     recorder = AndroidVoiceRecorder(),
-                    playback = AndroidVoicePlayback(),
+                    playback = AndroidVoicePlayback(applicationContext),
                     outputDirectory = cacheDir
                 ) as T
             }
@@ -43,34 +40,31 @@ class VoiceDebugActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        lifecycle.addObserver(object : DefaultLifecycleObserver {
+            override fun onStop(owner: LifecycleOwner) {
+                viewModel.interrupt()
+            }
+        })
         setContent {
             AndroidChatTheme {
-                val state by viewModel.uiState.collectAsState()
+                var hasPermission by remember {
+                    mutableStateOf(
+                        ContextCompat.checkSelfPermission(
+                            this,
+                            Manifest.permission.RECORD_AUDIO
+                        ) == PackageManager.PERMISSION_GRANTED
+                    )
+                }
                 val permission = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission()
-                ) { granted -> if (granted) viewModel.startRecording() }
-                Column(
-                    modifier = Modifier.fillMaxSize().padding(24.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Text("Voice message debug")
-                    Text("State: ${state.phase}, duration: ${state.durationMs} ms")
-                    when (state.phase) {
-                        VoicePhase.RECORDING -> Button(onClick = viewModel::stopRecording) {
-                            Text("Stop recording")
-                        }
-                        VoicePhase.RECORDED, VoicePhase.PLAYING -> {
-                            Button(onClick = viewModel::togglePlayback) {
-                                Text(if (state.phase == VoicePhase.PLAYING) "Stop playback" else "Play preview")
-                            }
-                            OutlinedButton(onClick = viewModel::clear) { Text("Discard") }
-                        }
-                        else -> Button(onClick = {
-                            permission.launch(Manifest.permission.RECORD_AUDIO)
-                        }) { Text("Record voice message") }
+                ) { granted -> hasPermission = granted }
+                VoiceMessageScreen(
+                    viewModel = viewModel,
+                    hasMicrophonePermission = hasPermission,
+                    onRequestMicrophonePermission = {
+                        permission.launch(Manifest.permission.RECORD_AUDIO)
                     }
-                    state.error?.let { Text("Error: $it") }
-                }
+                )
             }
         }
     }

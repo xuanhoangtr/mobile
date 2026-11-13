@@ -15,6 +15,17 @@ interface MediaSource {
     fun release(media: SelectedMedia) {}
 }
 
+class FileMediaSource : MediaSource {
+    override suspend fun inspect(uri: String): SelectedMedia {
+        val file = java.io.File(java.net.URI(uri))
+        if (!file.isFile || file.length() <= 0L) throw MediaException(MediaError.URI_ACCESS)
+        return SelectedMedia(uri, file.name, "audio/mp4", file.length())
+    }
+
+    override fun open(media: SelectedMedia): InputStream =
+        java.io.FileInputStream(java.io.File(java.net.URI(media.uri)))
+}
+
 interface MediaUploadService {
     /** Consume the stream incrementally. Implementations must cooperate with cancellation and close HTTP resources.
      * The repository owns [input] and verifies its EOF after this method returns; implementations must not close it.
