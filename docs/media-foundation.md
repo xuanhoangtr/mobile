@@ -39,6 +39,11 @@ Không thay `docs/api-contract.md`, Message, schema CHAT/AUTH, WebSocket hay JWT
 | D28 | Đánh giá gọi nhóm ≥3 người | EXPERIMENTAL — chỉ có join/leave state, chưa có SFU/WebRTC |
 | D29 | Rà soát media/call, cleanup và test chéo | DONE ở mức local source/build/test; chưa review tích hợp ba nhánh |
 | D30 | Feature freeze MEDIA và bàn giao trạng thái | DONE local; không claim WebRTC/FCM production |
+| D31 | Regression upload/download, voice, push và call | DONE local; chưa có thiết bị/network evidence |
+| D32 | Validator/playback/push/call unit regression và sửa blocker | DONE local; backend + Android test xanh |
+| D33 | Kiểm tra foreground/background, permission và hai thiết bị | PARTIAL — chỉ có source boundary, chưa có hardware |
+| D34 | Hoàn thiện phần báo cáo flow, kiến trúc và giới hạn MEDIA | DONE trong tài liệu này |
+| D35 | Release candidate 2 evidence và đối chiếu trạng thái | PARTIAL — chưa có clip/screenshot thiết bị |
 
 Không báo upload PASS thành ảnh đã tới máy người nhận. Android không giả dữ liệu upload thành công: service mặc định luôn báo INTEGRATION_BLOCKED.
 
@@ -208,6 +213,26 @@ không coi ba participant là đã gọi được. Các màn hình/UI này khôn
 regression test và debug APK đều chạy local. Chưa thực hiện clip/demo thiết bị,
 TURN/NAT test, FCM incoming call, WebRTC tracks, group media hoặc tích hợp
 realtime với CHAT; các mục đó giữ trạng thái Partial/Experimental.
+
+## Evidence D31–D35
+
+Đã chạy trong worktree `wt-media`, không dùng network dependency:
+
+```text
+android-app\gradlew.bat testDebugUnitTest assembleDebug --offline
+backend\gradlew.bat test --offline
+```
+
+Android regression bao phủ media selection/upload state, voice recording/
+playback state, batch retry, sticker, location policy, call accept/decline,
+camera/microphone state, reconnect, timeout và group-call join/leave state.
+Backend regression bao phủ media multipart/JWT/ACL/storage, push-token
+register/unregister và call invite/answer/decline/end authorization.
+
+Kết quả local: cả hai lệnh PASS, APK debug build được. Chưa ghi nhận kết quả
+thiết bị thật, hai mạng khác nhau, foreground/background notification,
+microphone/camera routing, TURN/NAT, FCM hoặc WebRTC track; không được dùng
+commit này làm bằng chứng cho các mục đó.
 
 ## Contract production đề xuất — BLOCKED
 

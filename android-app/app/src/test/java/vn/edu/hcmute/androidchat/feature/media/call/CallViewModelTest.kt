@@ -31,4 +31,14 @@ class CallViewModelTest {
         viewModel.markConnected()
         assertEquals(CallPhase.CONNECTED, viewModel.uiState.value.phase)
     }
+
+    @Test
+    fun ringingCallTimesOutWithVisibleError() {
+        val viewModel = CallViewModel()
+        viewModel.startOutgoing(8L, CallMedia.AUDIO, "call-timeout")
+        viewModel.onTimeout()
+
+        assertEquals(CallPhase.ERROR, viewModel.uiState.value.phase)
+        assertEquals("Call timed out", viewModel.uiState.value.error)
+    }
 }
