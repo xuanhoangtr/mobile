@@ -18,6 +18,9 @@ import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.pingPeriod
 import io.ktor.server.websocket.timeout
 import org.slf4j.event.Level
+import vn.edu.hcmute.androidchat.backend.chat.ChatRepository
+import vn.edu.hcmute.androidchat.backend.chat.InMemoryChatRepository
+import vn.edu.hcmute.androidchat.backend.chat.PostgresChatRepository
 import vn.edu.hcmute.androidchat.backend.chat.registerChatRoutes
 import vn.edu.hcmute.androidchat.backend.chat.registerChatWebSocketRoutes
 import vn.edu.hcmute.androidchat.backend.common.ApiErrorDetail
@@ -39,8 +42,14 @@ fun main() {
 }
 
 /** Configures Ktor plugins, JWT authentication, health route, and module routing. */
-fun Application.module(config: AppConfig = AppConfig.fromEnv()) {
+fun Application.module(
+    config: AppConfig = AppConfig.fromEnv(),
+    chatRepositoryOverride: ChatRepository? = null
+) {
     val dbManager = DatabaseManager(config).apply { initIfConfigured() }
+    val chatRepository = chatRepositoryOverride
+        ?: dbManager.dataSource?.let { PostgresChatRepository(it) }
+        ?: InMemoryChatRepository()
     monitor.subscribe(ApplicationStopped) {
         dbManager.close()
     }
@@ -91,8 +100,8 @@ fun Application.module(config: AppConfig = AppConfig.fromEnv()) {
             )
         }
 
-        registerChatRoutes()
-        registerChatWebSocketRoutes()
+        registerChatRoutes(chatRepository)
+        registerChatWebSocketRoutes(chatRepository)
         registerGroupRoutes()
     }
 }

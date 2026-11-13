@@ -1,6 +1,7 @@
 package vn.edu.hcmute.androidchat.backend.chat
 
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.auth.authenticate
 import io.ktor.server.auth.jwt.JWTPrincipal
 import io.ktor.server.auth.principal
@@ -14,19 +15,21 @@ import vn.edu.hcmute.androidchat.backend.common.CursorPage
 import vn.edu.hcmute.androidchat.backend.common.authenticatedUserId
 
 /**
- * Skeleton REST routes for Conversation & Message history (module CHAT).
- * Database-backed queries and membership enforcement will be wired in D04-D09.
+ * REST routes for Conversation & Message history (module CHAT).
  */
-fun Route.registerChatRoutes() {
+fun Route.registerChatRoutes(repository: ChatRepository) {
     authenticate(AUTH_JWT_NAME) {
         get("/conversations") {
-            call.principal<JWTPrincipal>()?.authenticatedUserId()
-                ?: return@get call.respondUnauthorized()
+            val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
+                ?: return@get call.respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", "Invalid authenticated principal")
+
+            val limit = call.request.queryParameters["limit"]?.toIntOrNull()?.coerceIn(1, 100) ?: 30
+            val items = repository.listConversations(userId = userId, limit = limit)
 
             call.respond(
                 HttpStatusCode.OK,
-                CursorPage<ConversationSummaryDto>(
-                    items = emptyList(),
+                CursorPage(
+                    items = items,
                     nextCursor = null,
                     hasMore = false
                 )
@@ -34,26 +37,26 @@ fun Route.registerChatRoutes() {
         }
 
         get("/conversations/{id}/messages") {
-            call.principal<JWTPrincipal>()?.authenticatedUserId()
-                ?: return@get call.respondUnauthorized()
+            val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
+                ?: return@get call.respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", "Invalid authenticated principal")
 
             val conversationId = call.parameters["id"]?.toLongOrNull()
             if (conversationId == null || conversationId <= 0L) {
-                return@get call.respond(
-                    HttpStatusCode.BadRequest,
-                    ApiErrorResponse(
-                        ApiErrorDetail(
-                            code = "VALIDATION_ERROR",
-                            message = "Invalid conversation id"
-                        )
-                    )
-                )
+                return@get call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid conversation id")
             }
+
+            val limit = call.request.queryParameters["limit"]?.toIntOrNull()?.coerceIn(1, 100) ?: 30
+            val items = repository.listMessages(userId = userId, conversationId = conversationId, limit = limit)
+                ?: return@get call.respondError(
+                    HttpStatusCode.Forbidden,
+                    "FORBIDDEN",
+                    "User is not an active member of this conversation"
+                )
 
             call.respond(
                 HttpStatusCode.OK,
-                CursorPage<MessageDto>(
-                    items = emptyList(),
+                CursorPage(
+                    items = items,
                     nextCursor = null,
                     hasMore = false
                 )
@@ -62,14 +65,6 @@ fun Route.registerChatRoutes() {
     }
 }
 
-private suspend fun io.ktor.server.application.ApplicationCall.respondUnauthorized() {
-    respond(
-        HttpStatusCode.Unauthorized,
-        ApiErrorResponse(
-            ApiErrorDetail(
-                code = "UNAUTHORIZED",
-                message = "Invalid authenticated principal"
-            )
-        )
-    )
+private suspend fun ApplicationCall.respondError(status: HttpStatusCode, code: String, message: String) {
+    respond(status, ApiErrorResponse(ApiErrorDetail(code = code, message = message)))
 }
