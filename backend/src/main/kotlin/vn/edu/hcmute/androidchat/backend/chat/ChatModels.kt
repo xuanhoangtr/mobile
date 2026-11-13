@@ -5,6 +5,11 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 
 @Serializable
+data class CreateDirectConversationRequest(
+    val targetUserId: Long
+)
+
+@Serializable
 data class ConversationSummaryDto(
     val id: Long,
     val type: String,

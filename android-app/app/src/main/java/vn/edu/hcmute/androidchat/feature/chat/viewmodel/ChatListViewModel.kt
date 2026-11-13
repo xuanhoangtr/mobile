@@ -7,6 +7,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import vn.edu.hcmute.androidchat.feature.chat.data.ChatApiService
+import vn.edu.hcmute.androidchat.feature.chat.data.ChatLocalCache
 import vn.edu.hcmute.androidchat.feature.chat.data.ChatRealtimeTransport
 import vn.edu.hcmute.androidchat.feature.chat.data.ChatServerEvent
 import vn.edu.hcmute.androidchat.feature.chat.model.ChatListUiState
@@ -15,10 +17,12 @@ import vn.edu.hcmute.androidchat.feature.chat.model.WsConnectionState
 
 /**
  * Holds chat list UI state across configuration changes (e.g. screen rotation)
- * and synchronizes connection status + incoming message previews from [ChatRealtimeTransport].
+ * and synchronizes REST conversations, local cache, and WebSocket updates.
  */
 class ChatListViewModel(
-    private val transport: ChatRealtimeTransport? = null
+    private val transport: ChatRealtimeTransport? = null,
+    private val apiService: ChatApiService? = null,
+    private val localCache: ChatLocalCache? = null
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(ChatListUiState())
     val uiState: StateFlow<ChatListUiState> = _uiState.asStateFlow()
@@ -34,6 +38,61 @@ class ChatListViewModel(
                 transport.events.collect { event ->
                     handleServerEvent(event)
                 }
+            }
+        }
+    }
+
+    fun loadConversations(baseUrl: String, accessToken: String) {
+        viewModelScope.launch {
+            val cached = runCatching { localCache?.getConversations().orEmpty() }.getOrDefault(emptyList())
+            if (cached.isNotEmpty() && _uiState.value.conversations.isEmpty()) {
+                _uiState.update { it.copy(conversations = cached, isLoading = apiService != null) }
+            } else {
+                setLoading(apiService != null)
+            }
+
+            val remote = apiService?.listConversations(baseUrl = baseUrl, accessToken = accessToken)
+                ?: run {
+                    setLoading(false)
+                    return@launch
+                }
+
+            remote.onSuccess { page ->
+                setConversations(page.items)
+                runCatching { localCache?.saveConversations(page.items) }
+            }.onFailure { err ->
+                setError(err.message ?: "Failed to load conversations")
+            }
+        }
+    }
+
+    fun openDirectConversation(
+        baseUrl: String,
+        accessToken: String,
+        targetUserId: Long,
+        onReady: (ConversationUiModel) -> Unit
+    ) {
+        val service = apiService ?: return
+        viewModelScope.launch {
+            setLoading(true)
+            service.createOrGetDirectConversation(
+                baseUrl = baseUrl,
+                accessToken = accessToken,
+                targetUserId = targetUserId
+            ).onSuccess { conversation ->
+                _uiState.update { state ->
+                    val existing = state.conversations.any { it.id == conversation.id }
+                    val updated = if (existing) {
+                        state.conversations.map { if (it.id == conversation.id) conversation else it }
+                    } else {
+                        listOf(conversation) + state.conversations
+                    }
+                    state.copy(isLoading = false, conversations = updated, errorMessage = null)
+                }
+                runCatching { localCache?.saveConversations(_uiState.value.conversations) }
+                onReady(conversation)
+            }.onFailure { err ->
+                setError(err.message ?: "Failed to open direct conversation")
             }
         }
     }
@@ -85,6 +144,9 @@ class ChatListViewModel(
                             }
                         }
                     )
+                }
+                viewModelScope.launch {
+                    runCatching { localCache?.saveConversations(_uiState.value.conversations) }
                 }
             }
 

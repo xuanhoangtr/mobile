@@ -7,6 +7,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import vn.edu.hcmute.androidchat.feature.chat.data.ChatApiService
+import vn.edu.hcmute.androidchat.feature.chat.data.ChatLocalCache
 import vn.edu.hcmute.androidchat.feature.chat.data.ChatRealtimeTransport
 import vn.edu.hcmute.androidchat.feature.chat.data.ChatServerEvent
 import vn.edu.hcmute.androidchat.feature.chat.model.ChatRoomUiState
@@ -17,11 +19,13 @@ import vn.edu.hcmute.androidchat.feature.chat.model.WsConnectionState
 import java.util.UUID
 
 /**
- * Holds active conversation state (including message draft) across screen rotation
- * and wires outgoing/incoming realtime events through [ChatRealtimeTransport].
+ * Holds active conversation state across screen rotation, handles cursor-paginated history,
+ * local cache persistence, realtime events, and idempotent retry on WebSocket reconnect.
  */
 class ChatRoomViewModel(
-    private val transport: ChatRealtimeTransport? = null
+    private val transport: ChatRealtimeTransport? = null,
+    private val apiService: ChatApiService? = null,
+    private val localCache: ChatLocalCache? = null
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(ChatRoomUiState())
     val uiState: StateFlow<ChatRoomUiState> = _uiState.asStateFlow()
@@ -32,7 +36,11 @@ class ChatRoomViewModel(
         if (transport != null) {
             viewModelScope.launch {
                 transport.connectionState.collect { state ->
+                    val previous = _uiState.value.connectionState
                     onConnectionStateChanged(state)
+                    if (state == WsConnectionState.CONNECTED && previous != WsConnectionState.CONNECTED) {
+                        retryPendingMessages()
+                    }
                 }
             }
             viewModelScope.launch {
@@ -62,6 +70,83 @@ class ChatRoomViewModel(
                     isGroup = isGroup,
                     connectionState = state.connectionState
                 )
+            }
+        }
+    }
+
+    fun loadInitialHistory(baseUrl: String, accessToken: String, currentUserId: Long, limit: Int = 30) {
+        val conversationId = _uiState.value.conversationId
+        if (conversationId <= 0L) return
+        activeCurrentUserId = currentUserId
+
+        viewModelScope.launch {
+            val cached = runCatching { localCache?.getMessages(conversationId).orEmpty() }
+                .getOrDefault(emptyList())
+            if (cached.isNotEmpty() && _uiState.value.messages.isEmpty()) {
+                _uiState.update { it.copy(messages = cached) }
+            }
+
+            val service = apiService ?: return@launch
+            _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+            service.listMessages(
+                baseUrl = baseUrl,
+                accessToken = accessToken,
+                conversationId = conversationId,
+                currentUserId = currentUserId,
+                cursor = null,
+                limit = limit
+            ).onSuccess { page ->
+                _uiState.update { state ->
+                    val merged = mergeMessages(existing = page.items, incoming = state.messages)
+                    state.copy(
+                        isLoading = false,
+                        messages = merged,
+                        hasMoreHistory = page.hasMore,
+                        nextHistoryCursor = page.nextCursor,
+                        errorMessage = null
+                    )
+                }
+                runCatching { localCache?.saveMessages(conversationId, _uiState.value.messages) }
+            }.onFailure { err ->
+                _uiState.update {
+                    it.copy(isLoading = false, errorMessage = err.message ?: "Failed to load history")
+                }
+            }
+        }
+    }
+
+    fun loadOlderHistory(baseUrl: String, accessToken: String, currentUserId: Long, limit: Int = 30) {
+        val state = _uiState.value
+        val conversationId = state.conversationId
+        val cursor = state.nextHistoryCursor
+        if (conversationId <= 0L || !state.hasMoreHistory || state.isLoadingOlder || cursor == null) return
+        val service = apiService ?: return
+        activeCurrentUserId = currentUserId
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoadingOlder = true) }
+            service.listMessages(
+                baseUrl = baseUrl,
+                accessToken = accessToken,
+                conversationId = conversationId,
+                currentUserId = currentUserId,
+                cursor = cursor,
+                limit = limit
+            ).onSuccess { page ->
+                _uiState.update { current ->
+                    val merged = mergeMessages(existing = page.items, incoming = current.messages)
+                    current.copy(
+                        isLoadingOlder = false,
+                        messages = merged,
+                        hasMoreHistory = page.hasMore,
+                        nextHistoryCursor = page.nextCursor
+                    )
+                }
+                runCatching { localCache?.saveMessages(conversationId, _uiState.value.messages) }
+            }.onFailure { err ->
+                _uiState.update {
+                    it.copy(isLoadingOlder = false, errorMessage = err.message ?: "Failed to load older messages")
+                }
             }
         }
     }
@@ -125,7 +210,72 @@ class ChatRoomViewModel(
                 draftText = ""
             )
         }
+        persistCurrentMessages()
         return pendingMessage
+    }
+
+    fun retryMessage(localId: String): Boolean {
+        val activeTransport = transport ?: return false
+        if (activeTransport.connectionState.value != WsConnectionState.CONNECTED) return false
+        val target = _uiState.value.messages.firstOrNull { it.localId == localId } ?: return false
+        val sent = activeTransport.sendMessage(
+            clientMessageId = target.clientMessageId,
+            conversationId = target.conversationId,
+            content = target.content,
+            type = target.type,
+            replyToId = target.replyToId
+        )
+        if (sent) {
+            _uiState.update { state ->
+                state.copy(
+                    messages = state.messages.map { msg ->
+                        if (msg.localId == localId) msg.copy(deliveryStatus = MessageDeliveryStatus.SENDING) else msg
+                    }
+                )
+            }
+        }
+        return sent
+    }
+
+    fun retryPendingMessages() {
+        val activeTransport = transport ?: return
+        if (activeTransport.connectionState.value != WsConnectionState.CONNECTED) return
+        val currentConversationId = _uiState.value.conversationId
+        if (currentConversationId <= 0L) return
+
+        val pending = _uiState.value.messages.filter {
+            it.conversationId == currentConversationId &&
+                it.isFromCurrentUser &&
+                (it.deliveryStatus == MessageDeliveryStatus.FAILED || it.deliveryStatus == MessageDeliveryStatus.SENDING)
+        }
+        if (pending.isEmpty()) return
+
+        val resentIds = mutableSetOf<String>()
+        for (msg in pending) {
+            val ok = activeTransport.sendMessage(
+                clientMessageId = msg.clientMessageId,
+                conversationId = msg.conversationId,
+                content = msg.content,
+                type = msg.type,
+                replyToId = msg.replyToId
+            )
+            if (ok) {
+                resentIds += msg.clientMessageId
+            }
+        }
+        if (resentIds.isNotEmpty()) {
+            _uiState.update { state ->
+                state.copy(
+                    messages = state.messages.map { msg ->
+                        if (msg.clientMessageId in resentIds) {
+                            msg.copy(deliveryStatus = MessageDeliveryStatus.SENDING)
+                        } else {
+                            msg
+                        }
+                    }
+                )
+            }
+        }
     }
 
     fun applyServerAck(clientMessageId: String, serverMessageId: Long, serverCreatedAt: String) {
@@ -144,6 +294,7 @@ class ChatRoomViewModel(
                 }
             )
         }
+        persistCurrentMessages()
     }
 
     fun clearError() {
@@ -176,7 +327,9 @@ class ChatRoomViewModel(
                         updated[existingIndex] = existing.copy(
                             serverId = event.id,
                             createdAt = event.createdAt,
-                            deliveryStatus = if (existing.deliveryStatus == MessageDeliveryStatus.SENDING) {
+                            deliveryStatus = if (existing.deliveryStatus == MessageDeliveryStatus.SENDING ||
+                                existing.deliveryStatus == MessageDeliveryStatus.FAILED
+                            ) {
                                 MessageDeliveryStatus.ACCEPTED
                             } else {
                                 existing.deliveryStatus
@@ -200,6 +353,7 @@ class ChatRoomViewModel(
                         state.copy(messages = state.messages + incoming)
                     }
                 }
+                persistCurrentMessages()
             }
 
             is ChatServerEvent.Receipt -> {
@@ -215,6 +369,7 @@ class ChatRoomViewModel(
                         }
                     )
                 }
+                persistCurrentMessages()
             }
 
             is ChatServerEvent.Error -> {
@@ -222,6 +377,34 @@ class ChatRoomViewModel(
             }
 
             else -> Unit
+        }
+    }
+
+    private fun mergeMessages(
+        existing: List<MessageUiModel>,
+        incoming: List<MessageUiModel>
+    ): List<MessageUiModel> {
+        val byKey = LinkedHashMap<String, MessageUiModel>()
+        for (msg in existing) {
+            byKey[msg.clientMessageId] = msg
+        }
+        for (msg in incoming) {
+            val duplicateByServerId = msg.serverId != null &&
+                byKey.values.any { it.serverId == msg.serverId }
+            if (!duplicateByServerId && !byKey.containsKey(msg.clientMessageId)) {
+                byKey[msg.clientMessageId] = msg
+            }
+        }
+        return byKey.values.toList()
+    }
+
+    private fun persistCurrentMessages() {
+        val cache = localCache ?: return
+        val convId = _uiState.value.conversationId
+        if (convId <= 0L) return
+        val snapshot = _uiState.value.messages
+        viewModelScope.launch {
+            runCatching { cache.saveMessages(convId, snapshot) }
         }
     }
 }

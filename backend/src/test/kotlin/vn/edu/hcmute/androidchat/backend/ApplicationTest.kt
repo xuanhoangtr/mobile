@@ -6,15 +6,23 @@ import io.ktor.client.plugins.websocket.WebSockets as ClientWebSockets
 import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import vn.edu.hcmute.androidchat.backend.chat.InMemoryChatRepository
+import vn.edu.hcmute.androidchat.backend.chat.MessageSendPayload
 import vn.edu.hcmute.androidchat.backend.common.AppConfig
 import vn.edu.hcmute.androidchat.backend.common.AppJson
 import kotlin.test.Test
@@ -157,5 +165,103 @@ class ApplicationTest {
             val peerReceipt = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
             assertEquals("receipt", peerReceipt["type"]?.jsonPrimitive?.content)
         }
+    }
+
+    @Test
+    fun directConversationIsIdempotentAndEnforcesTwoMemberAccess() = testApplication {
+        val repo = InMemoryChatRepository()
+        application { module(testConfig, chatRepositoryOverride = repo) }
+
+        val token42 = issueTestToken(42L)
+        val token99 = issueTestToken(99L)
+        val tokenOutsider = issueTestToken(777L)
+
+        // Self-chat must be rejected
+        val selfResp = client.post("/conversations/direct") {
+            header(HttpHeaders.Authorization, "Bearer $token42")
+            contentType(ContentType.Application.Json)
+            setBody("""{"targetUserId":42}""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, selfResp.status)
+
+        // User 42 creates direct conversation with user 99
+        val firstResp = client.post("/conversations/direct") {
+            header(HttpHeaders.Authorization, "Bearer $token42")
+            contentType(ContentType.Application.Json)
+            setBody("""{"targetUserId":99}""")
+        }
+        assertEquals(HttpStatusCode.OK, firstResp.status)
+        val firstJson = AppJson.parseToJsonElement(firstResp.bodyAsText()).jsonObject
+        val convId = firstJson["id"]!!.jsonPrimitive.long
+        assertEquals("DIRECT", firstJson["type"]?.jsonPrimitive?.content)
+
+        // User 99 requesting direct conversation with 42 returns the exact same conversationId
+        val secondResp = client.post("/conversations/direct") {
+            header(HttpHeaders.Authorization, "Bearer $token99")
+            contentType(ContentType.Application.Json)
+            setBody("""{"targetUserId":42}""")
+        }
+        assertEquals(HttpStatusCode.OK, secondResp.status)
+        val secondJson = AppJson.parseToJsonElement(secondResp.bodyAsText()).jsonObject
+        assertEquals(convId, secondJson["id"]!!.jsonPrimitive.long)
+
+        // Outsider 777 is forbidden from reading messages
+        val outsiderResp = client.get("/conversations/$convId/messages") {
+            header(HttpHeaders.Authorization, "Bearer $tokenOutsider")
+        }
+        assertEquals(HttpStatusCode.Forbidden, outsiderResp.status)
+    }
+
+    @Test
+    fun messagesEndpointSupportsCursorPaginationWithoutDuplicates() = testApplication {
+        val repo = InMemoryChatRepository().apply {
+            seedConversation(conversationId = 202L, memberIds = setOf(10L, 20L), title = "Paginated")
+            for (i in 1..5) {
+                saveMessage(
+                    senderId = if (i % 2 == 0) 20L else 10L,
+                    payload = MessageSendPayload(
+                        clientMessageId = "client-msg-$i",
+                        conversationId = 202L,
+                        type = "TEXT",
+                        content = "msg-$i"
+                    ),
+                    nowIso = "2026-11-13T11:00:0${i}Z"
+                )
+            }
+        }
+        application { module(testConfig, chatRepositoryOverride = repo) }
+        val token10 = issueTestToken(10L)
+
+        // Page 1 (newest 2 messages: msg-4, msg-5)
+        val page1Resp = client.get("/conversations/202/messages?limit=2") {
+            header(HttpHeaders.Authorization, "Bearer $token10")
+        }
+        assertEquals(HttpStatusCode.OK, page1Resp.status)
+        val page1 = AppJson.parseToJsonElement(page1Resp.bodyAsText()).jsonObject
+        assertTrue(page1["hasMore"]!!.jsonPrimitive.boolean)
+        val cursor1 = page1["nextCursor"]!!.jsonPrimitive.content
+        val items1 = page1["items"]!!.jsonArray.map { it.jsonObject["content"]!!.jsonPrimitive.content }
+        assertEquals(listOf("msg-4", "msg-5"), items1)
+
+        // Page 2 (older 2 messages: msg-2, msg-3)
+        val page2Resp = client.get("/conversations/202/messages?cursor=$cursor1&limit=2") {
+            header(HttpHeaders.Authorization, "Bearer $token10")
+        }
+        assertEquals(HttpStatusCode.OK, page2Resp.status)
+        val page2 = AppJson.parseToJsonElement(page2Resp.bodyAsText()).jsonObject
+        assertTrue(page2["hasMore"]!!.jsonPrimitive.boolean)
+        val cursor2 = page2["nextCursor"]!!.jsonPrimitive.content
+        val items2 = page2["items"]!!.jsonArray.map { it.jsonObject["content"]!!.jsonPrimitive.content }
+        assertEquals(listOf("msg-2", "msg-3"), items2)
+
+        // Page 3 (oldest 1 message: msg-1)
+        val page3Resp = client.get("/conversations/202/messages?cursor=$cursor2&limit=2") {
+            header(HttpHeaders.Authorization, "Bearer $token10")
+        }
+        assertEquals(HttpStatusCode.OK, page3Resp.status)
+        val page3 = AppJson.parseToJsonElement(page3Resp.bodyAsText()).jsonObject
+        assertEquals(false, page3["hasMore"]!!.jsonPrimitive.boolean)
+        val items3 = page3["items"]!!.jsonArray.map { it.jsonObject["content"]!!.jsonPrimitive.content }
+        assertEquals(listOf("msg-1"), items3)
     }
 }

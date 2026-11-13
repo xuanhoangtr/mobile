@@ -1,11 +1,17 @@
 package vn.edu.hcmute.androidchat.feature.chat.data
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -15,16 +21,20 @@ import vn.edu.hcmute.androidchat.feature.chat.model.MessageDeliveryStatus
 import vn.edu.hcmute.androidchat.feature.chat.model.MessageType
 import vn.edu.hcmute.androidchat.feature.chat.model.WsConnectionState
 import java.util.concurrent.TimeUnit
+import kotlin.math.min
 
 /**
- * OkHttp-backed WebSocket transport for `/ws/chat`.
+ * OkHttp-backed WebSocket transport for `/ws/chat` with exponential-backoff reconnect.
  * Never logs Authorization headers or raw access tokens.
  */
 class OkHttpChatWebSocketClient(
     private val client: OkHttpClient = OkHttpClient.Builder()
         .pingInterval(25, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
-        .build()
+        .build(),
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    private val baseReconnectDelayMs: Long = 1_000L,
+    private val maxReconnectDelayMs: Long = 30_000L
 ) : ChatRealtimeTransport {
 
     private val _connectionState = MutableStateFlow(WsConnectionState.DISCONNECTED)
@@ -36,13 +46,38 @@ class OkHttpChatWebSocketClient(
     @Volatile
     private var activeSocket: WebSocket? = null
 
+    @Volatile
+    private var manualDisconnect = false
+
+    @Volatile
+    private var lastWsUrl: String? = null
+
+    @Volatile
+    private var lastAccessToken: String? = null
+
+    private var reconnectAttempt = 0
+    private var reconnectJob: Job? = null
+
     override fun connect(wsUrl: String, accessToken: String) {
         if (wsUrl.isBlank() || accessToken.isBlank()) {
             _connectionState.value = WsConnectionState.DISCONNECTED
             return
         }
+        manualDisconnect = false
+        reconnectJob?.cancel()
+        reconnectJob = null
+        lastWsUrl = wsUrl
+        lastAccessToken = accessToken
+        openSocket(wsUrl, accessToken, isReconnect = false)
+    }
+
+    private fun openSocket(wsUrl: String, accessToken: String, isReconnect: Boolean) {
         activeSocket?.close(1000, "Reconnecting")
-        _connectionState.value = WsConnectionState.CONNECTING
+        _connectionState.value = if (isReconnect) {
+            WsConnectionState.RECONNECTING
+        } else {
+            WsConnectionState.CONNECTING
+        }
 
         val request = Request.Builder()
             .url(wsUrl)
@@ -53,6 +88,7 @@ class OkHttpChatWebSocketClient(
             request,
             object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
+                    reconnectAttempt = 0
                     _connectionState.value = WsConnectionState.CONNECTED
                 }
 
@@ -70,14 +106,17 @@ class OkHttpChatWebSocketClient(
                     if (activeSocket === webSocket) {
                         activeSocket = null
                     }
-                    _connectionState.value = WsConnectionState.DISCONNECTED
+                    if (!manualDisconnect && code != 1008) {
+                        scheduleReconnect()
+                    } else {
+                        _connectionState.value = WsConnectionState.DISCONNECTED
+                    }
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     if (activeSocket === webSocket) {
                         activeSocket = null
                     }
-                    _connectionState.value = WsConnectionState.DISCONNECTED
                     _events.tryEmit(
                         ChatServerEvent.Error(
                             requestId = null,
@@ -85,12 +124,43 @@ class OkHttpChatWebSocketClient(
                             message = t.message ?: "WebSocket connection failed"
                         )
                     )
+                    if (!manualDisconnect && response?.code != 401) {
+                        scheduleReconnect()
+                    } else {
+                        _connectionState.value = WsConnectionState.DISCONNECTED
+                    }
                 }
             }
         )
     }
 
+    private fun scheduleReconnect() {
+        val url = lastWsUrl
+        val token = lastAccessToken
+        if (manualDisconnect || url.isNullOrBlank() || token.isNullOrBlank()) {
+            _connectionState.value = WsConnectionState.DISCONNECTED
+            return
+        }
+        reconnectJob?.cancel()
+        val shift = min(reconnectAttempt, 5)
+        val delayMs = min(baseReconnectDelayMs shl shift, maxReconnectDelayMs)
+        reconnectAttempt += 1
+        _connectionState.value = WsConnectionState.RECONNECTING
+        reconnectJob = scope.launch {
+            delay(delayMs)
+            if (!manualDisconnect) {
+                openSocket(url, token, isReconnect = true)
+            }
+        }
+    }
+
     override fun disconnect() {
+        manualDisconnect = true
+        reconnectJob?.cancel()
+        reconnectJob = null
+        reconnectAttempt = 0
+        lastWsUrl = null
+        lastAccessToken = null
         val socket = activeSocket
         activeSocket = null
         socket?.close(1000, "Client disconnect")
