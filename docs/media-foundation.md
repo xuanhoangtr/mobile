@@ -44,6 +44,11 @@ Không thay `docs/api-contract.md`, Message, schema CHAT/AUTH, WebSocket hay JWT
 | D33 | Kiểm tra foreground/background, permission và hai thiết bị | PARTIAL — chỉ có source boundary, chưa có hardware |
 | D34 | Hoàn thiện phần báo cáo flow, kiến trúc và giới hạn MEDIA | DONE trong tài liệu này |
 | D35 | Release candidate 2 evidence và đối chiếu trạng thái | PARTIAL — chưa có clip/screenshot thiết bị |
+| D36 | Rà screenshot, multimedia/call và nội dung demo voice | PARTIAL — chưa có screenshot/clip thiết bị |
+| D37 | Chuẩn bị slide/kịch bản MEDIA, voice và calls | DONE ở mức nội dung kỹ thuật trong tài liệu; slide ngoài repo |
+| D38 | Dry-run demo và checklist chức năng thật | PARTIAL — chỉ dry-run build/test local |
+| D39 | Rà dependency, secret, license và AI disclosure | DONE local; không có secret/provider key trong source |
+| D40 | Chốt release candidate MEDIA và bàn giao | DONE local source/build/test; chưa cài APK trên thiết bị |
 
 Không báo upload PASS thành ảnh đã tới máy người nhận. Android không giả dữ liệu upload thành công: service mặc định luôn báo INTEGRATION_BLOCKED.
 
@@ -233,6 +238,20 @@ Kết quả local: cả hai lệnh PASS, APK debug build được. Chưa ghi nh�
 thiết bị thật, hai mạng khác nhau, foreground/background notification,
 microphone/camera routing, TURN/NAT, FCM hoặc WebRTC track; không được dùng
 commit này làm bằng chứng cho các mục đó.
+
+## Release checklist D36–D40
+
+- README có hướng dẫn chạy Android/backend, lệnh test offline và giới hạn
+  integration boundary.
+- `android-app/app/build/` và `backend/build/` chỉ là output local; không đưa
+  vào commit/release source.
+- Không có JWT secret, provider key, keystore hoặc `.env` thật trong MEDIA
+  source. Push token registry chỉ giữ token trong RAM dev và response không
+  echo provider token.
+- AI disclosure và trách nhiệm review code được ghi rõ; người bàn giao phải
+  hiểu và giải thích phần source trước khi merge.
+- Release candidate MEDIA gồm source/tests/docs local. APK debug có thể tạo
+  lại bằng Gradle nhưng chưa phải bằng chứng thiết bị hoặc production deploy.
 
 ## Contract production đề xuất — BLOCKED
 

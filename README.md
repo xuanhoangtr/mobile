@@ -62,12 +62,29 @@ https://stitch.withgoogle.com/projects/11111923560284449667
 
 ## 7. Trạng thái dự án
 
-Đang khởi tạo bộ khung Android.
+MEDIA foundation đã hoàn thiện ở mức local source/build/test trên nhánh
+`feature/media-foundation`. Đã có picker/upload/download boundary, voice,
+batch attachment, sticker, vị trí, wallpaper và call signaling/state POC.
+CHAT vẫn sở hữu message/realtime/membership; AUTH sở hữu session/JWT.
 
-Các chức năng chat, tài khoản, media và backend
-chưa được triển khai trên bộ khung mới.
+WebRTC media thật, FCM provider, TURN/NAT, group media và kiểm thử thiết bị
+thật chưa được claim hoàn thành. Xem [bằng chứng và giới hạn MEDIA](docs/media-foundation.md).
 
-## 8. Nguồn tham khảo và AI
+## 8. Kiểm thử và release checklist MEDIA
+
+Chạy từ thư mục tương ứng trên Windows:
+
+    cd android-app
+    .\gradlew.bat testDebugUnitTest assembleDebug --offline
+    cd ..\backend
+    .\gradlew.bat test --offline
+
+Build/test output nằm trong `android-app/app/build/` và `backend/build/`, không
+được commit. Không đưa JWT secret, provider key, keystore hoặc file `.env`
+thật vào source/release ZIP. Debug APK dùng `UnconfiguredMediaUploadService`
+nếu host chưa inject upload service thật.
+
+## 9. Nguồn tham khảo và AI
 
 Nhóm sử dụng các tài liệu và repository công khai
 để nghiên cứu kỹ thuật.
@@ -77,13 +94,13 @@ trong README hoặc báo cáo theo rubric.
 Mỗi thành viên chịu trách nhiệm hiểu và giải thích
 mã nguồn mình đóng góp.
 
-## 9. MEDIA foundation D01–D05 (dev-only, DRAFT)
+## 10. MEDIA foundation D01–D40 (dev-only, DRAFT)
 
 Đã thêm module MEDIA độc lập cho SAF picker/preview/state/repository interface trên Android
 và upload streaming/owner-only download trong backend Ktor hiện tại.
 API thử nghiệm mặc định tắt; chưa nối root navigation, AUTH network adapter hoặc CHAT message.
-Xem [phạm vi, cách bật local, API đề xuất, ACL và giới hạn](docs/media-foundation.md).
+Xem [phạm vi, bằng chứng, API đề xuất, ACL và giới hạn](docs/media-foundation.md).
 
 Source MEDIA Android/backend, MEDIA tests và tài liệu foundation được xây dựng với hỗ trợ
-Codex trong task MEDIA D01–D05. Đây chưa phải MEDIA production-ready hoặc demo hai máy.
+Copilot trong task MEDIA D01–D40. Đây chưa phải MEDIA production-ready hoặc demo hai máy.
 Chi tiết AI disclosure và các phụ thuộc cần nhóm duyệt nằm trong tài liệu trên.
