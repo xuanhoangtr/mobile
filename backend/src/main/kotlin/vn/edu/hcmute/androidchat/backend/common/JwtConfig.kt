@@ -10,6 +10,7 @@ import io.ktor.server.auth.Authentication
 import io.ktor.server.auth.jwt.JWTPrincipal
 import io.ktor.server.auth.jwt.jwt
 import io.ktor.server.response.respond
+import java.util.UUID
 
 const val AUTH_JWT_NAME = "auth-jwt"
 
@@ -30,7 +31,9 @@ fun Application.configureJwtAuth(config: AppConfig) {
             verifier(verifier)
             validate { credential ->
                 val userId = credential.payload.subject?.toLongOrNull()
-                if (userId != null && userId > 0L) {
+                val sessionId = credential.payload.getClaim("sid").asString()
+                val hasSessionId = sessionId?.let { raw -> runCatching { UUID.fromString(raw) }.isSuccess } ?: false
+                if (userId != null && userId > 0L && hasSessionId) {
                     JWTPrincipal(credential.payload)
                 } else {
                     null

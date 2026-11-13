@@ -18,6 +18,14 @@ import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.pingPeriod
 import io.ktor.server.websocket.timeout
 import org.slf4j.event.Level
+import java.sql.SQLException
+import java.time.Instant
+import kotlin.time.Duration.Companion.seconds
+import vn.edu.hcmute.androidchat.backend.auth.AuthRepository
+import vn.edu.hcmute.androidchat.backend.auth.AuthService
+import vn.edu.hcmute.androidchat.backend.auth.PostgresAuthRepository
+import vn.edu.hcmute.androidchat.backend.auth.installAuthSessionValidation
+import vn.edu.hcmute.androidchat.backend.auth.registerAuthAndUserRoutes
 import vn.edu.hcmute.androidchat.backend.chat.registerChatRoutes
 import vn.edu.hcmute.androidchat.backend.chat.registerChatWebSocketRoutes
 import vn.edu.hcmute.androidchat.backend.common.ApiErrorDetail
@@ -25,11 +33,10 @@ import vn.edu.hcmute.androidchat.backend.common.ApiErrorResponse
 import vn.edu.hcmute.androidchat.backend.common.AppConfig
 import vn.edu.hcmute.androidchat.backend.common.AppJson
 import vn.edu.hcmute.androidchat.backend.common.DatabaseManager
+import vn.edu.hcmute.androidchat.backend.common.DatabaseUnavailableException
 import vn.edu.hcmute.androidchat.backend.common.HealthResponse
 import vn.edu.hcmute.androidchat.backend.common.configureJwtAuth
 import vn.edu.hcmute.androidchat.backend.groups.registerGroupRoutes
-import java.time.Instant
-import kotlin.time.Duration.Companion.seconds
 
 fun main() {
     val config = AppConfig.fromEnv()
@@ -40,6 +47,10 @@ fun main() {
 
 /** Configures Ktor plugins, JWT authentication, health route, and module routing. */
 fun Application.module(config: AppConfig = AppConfig.fromEnv()) {
+    module(config, authRepositoryOverride = null)
+}
+
+internal fun Application.module(config: AppConfig, authRepositoryOverride: AuthRepository?) {
     val dbManager = DatabaseManager(config).apply { initIfConfigured() }
     monitor.subscribe(ApplicationStopped) {
         dbManager.close()
@@ -56,6 +67,18 @@ fun Application.module(config: AppConfig = AppConfig.fromEnv()) {
     }
 
     install(StatusPages) {
+        exception<DatabaseUnavailableException> { call, _ ->
+            call.respond(
+                HttpStatusCode.ServiceUnavailable,
+                ApiErrorResponse(ApiErrorDetail(code = "SERVICE_UNAVAILABLE", message = "Authentication storage is unavailable"))
+            )
+        }
+        exception<SQLException> { call, _ ->
+            call.respond(
+                HttpStatusCode.ServiceUnavailable,
+                ApiErrorResponse(ApiErrorDetail(code = "SERVICE_UNAVAILABLE", message = "Authentication storage is unavailable"))
+            )
+        }
         exception<Throwable> { call, _ ->
             call.respond(
                 HttpStatusCode.InternalServerError,
@@ -76,7 +99,9 @@ fun Application.module(config: AppConfig = AppConfig.fromEnv()) {
         masking = false
     }
 
+    val authService = AuthService(authRepositoryOverride ?: PostgresAuthRepository(dbManager), config)
     configureJwtAuth(config)
+    installAuthSessionValidation(config, authService)
 
     routing {
         get("/health") {
@@ -94,5 +119,6 @@ fun Application.module(config: AppConfig = AppConfig.fromEnv()) {
         registerChatRoutes()
         registerChatWebSocketRoutes()
         registerGroupRoutes()
+        registerAuthAndUserRoutes(authService)
     }
 }

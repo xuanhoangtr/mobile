@@ -105,8 +105,10 @@
 - `message_reactions`: `(message_id, user_id, emoji, created_at)`, `PRIMARY KEY (message_id, user_id, emoji)`.
 - `pinned_messages`: `(conversation_id, message_id, pinned_by, pinned_at)`, `PRIMARY KEY (conversation_id, message_id)`.
 
-### 2.2. Thực thể liên module (chốt chi tiết với AUTH & MEDIA ở D02)
-- **AUTH (Đinh Công Huy):** `User`, `Session`, `FriendRequest` / `ContactRelation`, `UserBlock`.
+### 2.2. Thực thể liên module (AUTH proposal v0.2 — chờ AUTH/CHAT/MEDIA review)
+- **AUTH (Đinh Công Huy) — `User`:** `id`, normalized unique `email`, unique lowercase `username`, `displayName`, server-only `passwordHash`, nullable E.164 `normalizedPhone`, `phoneDiscoverable`, `avatarUrl`, `bio`, `privacySettings`, `status`, `createdAt`, `updatedAt`. Never return `passwordHash`; only return a phone number on `/users/me`, and never expose it from general search.
+- **AUTH — `Session`:** UUID `id`, `userId`, server-only SHA-256 `refreshTokenHash`, `createdAt`, `accessTokenExpiresAt`, `refreshTokenExpiresAt`, nullable `rotatedAt`, `lastUsedAt`, `revokedAt` and `revokedReason`, `deviceName`, `clientPlatform`. Clear the refresh hash on revoke. Keep one active refresh token per session and rotate it atomically on refresh.
+- **AUTH — `FriendRequest` / `ContactRelation`, `UserBlock`:** planned domain entities; not part of the auth-foundation migration.
 - **MEDIA (Nguyễn Quang Huy):** `MediaObject` (`id`, `ownerId`, `conversationId`, `mimeType`, `byteSize`, `storageKey`, `uploadState`), `CallSession`, `DeviceToken` / `NotificationPreference`.
 
 ---
@@ -166,8 +168,33 @@
 }
 ```
 
-### 3.3. Nhóm API tham khảo của AUTH & MEDIA (chờ owner chốt chi tiết ở D02)
-- **AUTH (Đinh Công Huy):** `POST /auth/register`, `POST /auth/login`, `POST /auth/otp/request`, `POST /auth/otp/verify`, `POST /auth/refresh`, `POST /auth/logout`, `GET/PATCH /users/me`, `GET /users/search`, `GET /users/by-phone`, `/friend-requests`, `/users/{id}/block`.
+### 3.3. AUTH REST API (proposal v0.2 — chờ review của CHAT & MEDIA)
+
+All times are UTC ISO-8601. Private routes require a valid access JWT and an active server-side session. The JWT contract is `iss = JWT_ISSUER`, `aud = JWT_AUDIENCE`, numeric `sub = userId`, UUID `sid = sessionId`, `iat`, and `exp`. Access tokens expire after 15 minutes; opaque refresh tokens expire after 30 days, are returned only at login/register/refresh, are stored as SHA-256 hashes on the server, and rotate on every refresh. Reject an old, expired, revoked, or already-rotated refresh token with the common `UNAUTHORIZED` error. The server checks `sid` against the active `sessions` row for REST and WebSocket authorization, so logout revokes outstanding access tokens immediately.
+
+| Method & Path | Request / response | Access and behavior |
+|---|---|---|
+| `POST /auth/register` | `{ "email", "password", "displayName", "username?", "deviceName?", "clientPlatform?" }` → `AuthTokenResponse` | Public. Normalize email/username to lowercase; require valid email, username `[a-z0-9_]{3,24}`, display name 1–80 chars, password 10–72 UTF-8 bytes. Hash password with BCrypt cost 12. Duplicate email/username → `409 CONFLICT`. |
+| `POST /auth/login` | `{ "email", "password", "deviceName?", "clientPlatform?" }` → `AuthTokenResponse` | Public. Return the same `401 UNAUTHORIZED` for an unknown email and wrong password. Never log credentials. |
+| `POST /auth/refresh` | `{ "refreshToken" }` → `AuthTokenResponse` | Public. Atomically rotate a single-use refresh token and issue a new 15-minute access token for the same session. |
+| `POST /auth/logout` | Bearer access JWT + `{ "refreshToken" }` → `{ "revoked": true/false }` | Authenticated; refresh token must belong to the caller's JWT `sid` and `sub`. Revoke the session and clear its stored refresh-token hash. |
+| `GET /users/me` | → `PublicUser` | Authenticated; returns the caller's email and phone along with public profile fields. |
+| `PATCH /users/me` | `{ "displayName?", "bio?" }` → `PublicUser` | Authenticated. At least one field is required; display name 1–80 chars, bio up to 160 chars. Send `bio: ""` to clear it. |
+| `GET /users/search?q=...&cursor=...&limit=30` | → `CursorPage<PublicUser>` | Authenticated. Search display name/username only; query 2–80 chars; limit 1–100; excludes caller. Cursor is opaque URL-safe Base64 of the last returned numeric id. No email or phone in results. |
+| `GET /users/by-phone?phone=+...` | → `PublicUser` | Authenticated. Normalize visual spaces/parentheses/dashes and require E.164. Return the same `404 NOT_FOUND` for an absent or non-discoverable account. |
+
+`AuthTokenResponse` contains `user`, `sessionId`, `accessToken`, `accessTokenExpiresAt`, `refreshToken`, `refreshTokenExpiresAt`, and `tokenType: "Bearer"`. Passwords, access tokens and refresh tokens are never persisted in Android preferences as plaintext. Validation errors use `400 VALIDATION_ERROR`; duplicate accounts use `409 CONFLICT`; unavailable PostgreSQL uses `503 SERVICE_UNAVAILABLE`.
+
+#### Android session provider shared with CHAT and MEDIA
+
+AUTH owns `AuthTokenProvider` in `android-app/.../feature/auth/session/`. The shared interface exposes `suspend fun accessToken(): String?` and `suspend fun refreshAfterUnauthorized(): String?`; AUTH's implementation serializes refresh requests, rotates/persists tokens, and clears the local session if refresh is rejected. Store the access token, refresh token and expiry metadata in AUTH-owned `AuthSessionStore`, encrypted with an Android Keystore AES-GCM key; never use `local.properties` or ordinary preferences for token plaintext.
+
+HTTP clients for CHAT/MEDIA obtain `accessToken()` for `Authorization: Bearer <accessToken>`. On `401`, call `refreshAfterUnauthorized()` once and retry only when the request is safe/idempotent or carries the endpoint's idempotency key; do not blindly replay a non-idempotent mutation. WebSocket `/ws/chat` obtains the same token before handshake; on `401`, refresh and reconnect once. Other modules depend on the interface, not AUTH's storage implementation. MainActivity/network-root wiring remains a shared integration point for review.
+
+#### OTP dev/test decision
+
+This auth-foundation slice does not implement OTP (the plan schedules provider request/verification for D09). The provider remains unselected. Unit/integration tests inject an in-memory fake delivery adapter and inspect its test-only code; no fixed OTP, production bypass, or OTP in logs/API responses. Android development uses the selected provider's official sandbox/test numbers once the group chooses a provider. Production must fail closed when no real provider is configured; no developer OTP fallback is permitted.
+
 - **MEDIA (Nguyễn Quang Huy):** `POST /media/upload`, `GET /media/{id}`, `GET /media/{id}/download`, `POST /devices/push-token`.
 
 ---

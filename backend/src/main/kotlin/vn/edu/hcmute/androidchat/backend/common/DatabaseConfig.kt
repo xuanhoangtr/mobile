@@ -3,6 +3,7 @@ package vn.edu.hcmute.androidchat.backend.common
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.slf4j.LoggerFactory
+import java.sql.Connection
 
 /**
  * Manages optional PostgreSQL HikariCP connection pool for the backend skeleton.
@@ -44,8 +45,16 @@ class DatabaseManager(private val config: AppConfig) : AutoCloseable {
         }
     }
 
+    /** Uses the shared application pool without exposing its lifecycle to feature repositories. */
+    fun <T> withConnection(block: (Connection) -> T): T {
+        val pool = dataSource ?: throw DatabaseUnavailableException()
+        return pool.connection.use(block)
+    }
+
     override fun close() {
         dataSource?.close()
         dataSource = null
     }
 }
+
+class DatabaseUnavailableException : IllegalStateException("Database is not configured")

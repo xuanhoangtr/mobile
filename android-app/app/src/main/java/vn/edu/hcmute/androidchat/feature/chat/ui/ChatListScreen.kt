@@ -74,6 +74,8 @@ fun ChatListScreen(
     onSearchQueryChange: (String) -> Unit,
     onConversationClick: (ConversationUiModel) -> Unit,
     onCreateGroupClick: () -> Unit,
+    onContactsClick: () -> Unit = {},
+    onProfileClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var selectedFilter by rememberSaveable { mutableStateOf(ChatFilterTab.ALL) }
@@ -151,13 +153,13 @@ fun ChatListScreen(
                 )
                 NavigationBarItem(
                     selected = false,
-                    onClick = {},
+                    onClick = onContactsClick,
                     icon = { Text("○", color = ChatStitchTokens.TextMuted) },
                     label = { Text(stringResource(R.string.nav_contacts), maxLines = 1) }
                 )
                 NavigationBarItem(
                     selected = false,
-                    onClick = {},
+                    onClick = onProfileClick,
                     icon = { Text("○", color = ChatStitchTokens.TextMuted) },
                     label = { Text(stringResource(R.string.nav_calls), maxLines = 1) }
                 )

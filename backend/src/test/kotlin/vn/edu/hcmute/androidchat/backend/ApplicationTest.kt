@@ -16,6 +16,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import vn.edu.hcmute.androidchat.backend.common.AppConfig
 import vn.edu.hcmute.androidchat.backend.common.AppJson
+import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -32,11 +33,12 @@ class ApplicationTest {
         jwtAudience = "android-chat-clients"
     )
 
-    private fun issueTestToken(userId: Long): String =
+    private fun issueTestToken(userId: Long, sessionId: UUID): String =
         JWT.create()
             .withIssuer(testConfig.jwtIssuer)
             .withAudience(testConfig.jwtAudience)
             .withSubject(userId.toString())
+            .withClaim("sid", sessionId.toString())
             .sign(Algorithm.HMAC256(testConfig.jwtSecret))
 
     @Test
@@ -52,12 +54,25 @@ class ApplicationTest {
 
     @Test
     fun conversationsRequiresValidJwtAndReturnsEmptySkeletonWhenAuthenticated() = testApplication {
-        application { module(testConfig) }
+        val repository = InMemoryAuthRepository()
+        application { module(testConfig, repository) }
 
         val unauth = client.get("/conversations")
         assertEquals(HttpStatusCode.Unauthorized, unauth.status)
 
-        val token = issueTestToken(userId = 7L)
+        val legacySessionlessToken = JWT.create()
+            .withIssuer(testConfig.jwtIssuer)
+            .withAudience(testConfig.jwtAudience)
+            .withSubject("7")
+            .sign(Algorithm.HMAC256(testConfig.jwtSecret))
+        val sessionless = client.get("/conversations") {
+            header(HttpHeaders.Authorization, "Bearer $legacySessionlessToken")
+        }
+        assertEquals(HttpStatusCode.Unauthorized, sessionless.status)
+
+        val sessionId = UUID.randomUUID()
+        repository.seedActiveSession(userId = 7L, sessionId = sessionId)
+        val token = issueTestToken(userId = 7L, sessionId = sessionId)
         val auth = client.get("/conversations") {
             header(HttpHeaders.Authorization, "Bearer $token")
         }
@@ -67,7 +82,8 @@ class ApplicationTest {
 
     @Test
     fun webSocketChatRejectsUnauthenticatedAndProcessesMessageSendAndDeduplication() = testApplication {
-        application { module(testConfig) }
+        val repository = InMemoryAuthRepository()
+        application { module(testConfig, repository) }
 
         val wsClient = createClient {
             install(ClientWebSockets)
@@ -78,7 +94,9 @@ class ApplicationTest {
         }
         assertTrue(unauthFailed.isFailure)
 
-        val token = issueTestToken(userId = 42L)
+        val sessionId = UUID.randomUUID()
+        repository.seedActiveSession(userId = 42L, sessionId = sessionId)
+        val token = issueTestToken(userId = 42L, sessionId = sessionId)
 
         wsClient.webSocket("/ws/chat", request = {
             header(HttpHeaders.Authorization, "Bearer $token")

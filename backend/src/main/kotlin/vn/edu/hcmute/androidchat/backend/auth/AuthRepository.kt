@@ -1,0 +1,240 @@
+package vn.edu.hcmute.androidchat.backend.auth
+
+import vn.edu.hcmute.androidchat.backend.common.DatabaseManager
+import java.sql.ResultSet
+import java.sql.Timestamp
+import java.time.Instant
+import java.util.UUID
+
+internal interface AuthRepository {
+    fun createUser(email: String, username: String, displayName: String, passwordHash: String, now: Instant): AuthUser
+    fun findUserByEmail(email: String): AuthUser?
+    fun findUserById(userId: Long): AuthUser?
+    fun updateProfile(userId: Long, displayName: String?, bio: String?, now: Instant): AuthUser?
+    fun searchUsers(query: String, afterId: Long?, excludeUserId: Long, limit: Int): List<AuthUser>
+    fun findDiscoverableUserByPhone(phone: String): AuthUser?
+    fun createSession(session: AuthSession)
+    fun rotateSession(oldHash: String, newHash: String, accessExpiresAt: Instant, refreshExpiresAt: Instant, now: Instant): AuthSession?
+    fun revokeSession(sessionId: UUID, refreshTokenHash: String, userId: Long, now: Instant): Boolean
+    fun findActiveSession(sessionId: UUID, userId: Long, now: Instant): AuthSession?
+}
+
+internal class PostgresAuthRepository(private val database: DatabaseManager) : AuthRepository {
+    override fun createUser(email: String, username: String, displayName: String, passwordHash: String, now: Instant) =
+        database.withConnection { connection ->
+            connection.prepareStatement(
+                """
+                INSERT INTO users (email, username, display_name, password_hash, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                RETURNING id, email, username, display_name, password_hash, normalized_phone,
+                          phone_discoverable, avatar_url, bio, privacy_settings::text, created_at, updated_at
+                """.trimIndent()
+            ).use { statement ->
+                statement.setString(1, email)
+                statement.setString(2, username)
+                statement.setString(3, displayName)
+                statement.setString(4, passwordHash)
+                statement.setObject(5, now)
+                statement.setObject(6, now)
+                statement.executeQuery().use { result ->
+                    check(result.next()) { "User insert did not return a row" }
+                    result.toAuthUser()
+                }
+            }
+        }
+
+    override fun findUserByEmail(email: String) = database.withConnection { connection ->
+        connection.prepareStatement(
+            """
+            SELECT id, email, username, display_name, password_hash, normalized_phone,
+                   phone_discoverable, avatar_url, bio, privacy_settings::text, created_at, updated_at
+            FROM users WHERE email = ? AND status = 'ACTIVE'
+            """.trimIndent()
+        ).use { statement ->
+            statement.setString(1, email)
+            statement.executeQuery().use { result -> if (result.next()) result.toAuthUser() else null }
+        }
+    }
+
+    override fun findUserById(userId: Long) = database.withConnection { connection ->
+        connection.prepareStatement(
+            """
+            SELECT id, email, username, display_name, password_hash, normalized_phone,
+                   phone_discoverable, avatar_url, bio, privacy_settings::text, created_at, updated_at
+            FROM users WHERE id = ? AND status = 'ACTIVE'
+            """.trimIndent()
+        ).use { statement ->
+            statement.setLong(1, userId)
+            statement.executeQuery().use { result -> if (result.next()) result.toAuthUser() else null }
+        }
+    }
+
+    override fun updateProfile(userId: Long, displayName: String?, bio: String?, now: Instant) =
+        database.withConnection { connection ->
+            connection.prepareStatement(
+                """
+                UPDATE users
+                SET display_name = COALESCE(?, display_name),
+                    bio = CASE WHEN ? THEN NULLIF(?, '') ELSE bio END,
+                    updated_at = ?
+                WHERE id = ? AND status = 'ACTIVE'
+                RETURNING id, email, username, display_name, password_hash, normalized_phone,
+                          phone_discoverable, avatar_url, bio, privacy_settings::text, created_at, updated_at
+                """.trimIndent()
+            ).use { statement ->
+                statement.setString(1, displayName)
+                statement.setBoolean(2, bio != null)
+                statement.setString(3, bio)
+                statement.setObject(4, now)
+                statement.setLong(5, userId)
+                statement.executeQuery().use { result -> if (result.next()) result.toAuthUser() else null }
+            }
+        }
+
+    override fun searchUsers(query: String, afterId: Long?, excludeUserId: Long, limit: Int) =
+        database.withConnection { connection ->
+            connection.prepareStatement(
+                """
+                SELECT id, email, username, display_name, password_hash, normalized_phone,
+                       phone_discoverable, avatar_url, bio, privacy_settings::text, created_at, updated_at
+                FROM users
+                WHERE status = 'ACTIVE' AND id <> ? AND id > ?
+                  AND (display_name ILIKE ? OR username ILIKE ?)
+                ORDER BY id ASC LIMIT ?
+                """.trimIndent()
+            ).use { statement ->
+                statement.setLong(1, excludeUserId)
+                statement.setLong(2, afterId ?: 0L)
+                val safeQuery = query.replace("%", " ").replace("_", " ")
+                val pattern = "%$safeQuery%"
+                statement.setString(3, pattern)
+                statement.setString(4, pattern)
+                statement.setInt(5, limit + 1)
+                statement.executeQuery().use { result -> result.toAuthUsers() }
+            }
+        }
+
+    override fun findDiscoverableUserByPhone(phone: String) = database.withConnection { connection ->
+        connection.prepareStatement(
+            """
+            SELECT id, email, username, display_name, password_hash, normalized_phone,
+                   phone_discoverable, avatar_url, bio, privacy_settings::text, created_at, updated_at
+            FROM users WHERE normalized_phone = ? AND phone_discoverable = TRUE AND status = 'ACTIVE'
+            """.trimIndent()
+        ).use { statement ->
+            statement.setString(1, phone)
+            statement.executeQuery().use { result -> if (result.next()) result.toAuthUser() else null }
+        }
+    }
+
+    override fun createSession(session: AuthSession) {
+        database.withConnection { connection ->
+            connection.prepareStatement(
+                """
+                INSERT INTO sessions (
+                    id, user_id, refresh_token_hash, created_at, access_token_expires_at,
+                    refresh_token_expires_at, revoked_at, device_name, client_platform, last_used_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """.trimIndent()
+            ).use { statement ->
+                statement.setObject(1, session.id)
+                statement.setLong(2, session.userId)
+                statement.setString(3, session.refreshTokenHash)
+                statement.setObject(4, session.createdAt)
+                statement.setObject(5, session.accessTokenExpiresAt)
+                statement.setObject(6, session.refreshTokenExpiresAt)
+                statement.setObject(7, session.revokedAt)
+                statement.setString(8, session.deviceName)
+                statement.setString(9, session.clientPlatform)
+                statement.setObject(10, session.lastUsedAt)
+                statement.executeUpdate()
+            }
+        }
+    }
+
+    override fun rotateSession(
+        oldHash: String,
+        newHash: String,
+        accessExpiresAt: Instant,
+        refreshExpiresAt: Instant,
+        now: Instant
+    ) = database.withConnection { connection ->
+        connection.prepareStatement(
+            """
+            UPDATE sessions
+            SET refresh_token_hash = ?, access_token_expires_at = ?, refresh_token_expires_at = ?,
+                last_used_at = ?, rotated_at = ?
+            WHERE refresh_token_hash = ? AND revoked_at IS NULL AND refresh_token_expires_at > ?
+            RETURNING id, user_id, refresh_token_hash, created_at, access_token_expires_at,
+                      refresh_token_expires_at, revoked_at, device_name, client_platform, last_used_at
+            """.trimIndent()
+        ).use { statement ->
+            statement.setString(1, newHash)
+            statement.setObject(2, accessExpiresAt)
+            statement.setObject(3, refreshExpiresAt)
+            statement.setObject(4, now)
+            statement.setObject(5, now)
+            statement.setString(6, oldHash)
+            statement.setObject(7, now)
+            statement.executeQuery().use { result -> if (result.next()) result.toAuthSession() else null }
+        }
+    }
+
+    override fun revokeSession(sessionId: UUID, refreshTokenHash: String, userId: Long, now: Instant) =
+        database.withConnection { connection ->
+            connection.prepareStatement(
+                """
+                UPDATE sessions SET revoked_at = ?, refresh_token_hash = NULL
+                WHERE id = ? AND refresh_token_hash = ? AND user_id = ? AND revoked_at IS NULL
+                """.trimIndent()
+            ).use { statement ->
+                statement.setObject(1, now)
+                statement.setObject(2, sessionId)
+                statement.setString(3, refreshTokenHash)
+                statement.setLong(4, userId)
+                statement.executeUpdate() == 1
+            }
+        }
+
+    override fun findActiveSession(sessionId: UUID, userId: Long, now: Instant) = database.withConnection { connection ->
+        connection.prepareStatement(
+            """
+            SELECT id, user_id, refresh_token_hash, created_at, access_token_expires_at,
+                   refresh_token_expires_at, revoked_at, device_name, client_platform, last_used_at
+            FROM sessions WHERE id = ? AND user_id = ? AND revoked_at IS NULL
+              AND access_token_expires_at > ? AND refresh_token_expires_at > ?
+            """.trimIndent()
+        ).use { statement ->
+            statement.setObject(1, sessionId)
+            statement.setLong(2, userId)
+            statement.setObject(3, now)
+            statement.setObject(4, now)
+            statement.executeQuery().use { result -> if (result.next()) result.toAuthSession() else null }
+        }
+    }
+
+    private fun ResultSet.toAuthUser() = AuthUser(
+        id = getLong("id"), email = getString("email"), username = getString("username"),
+        displayName = getString("display_name"), passwordHash = getString("password_hash"),
+        normalizedPhone = getString("normalized_phone"), phoneDiscoverable = getBoolean("phone_discoverable"),
+        avatarUrl = getString("avatar_url"), bio = getString("bio"),
+        privacySettings = getString("privacy_settings"), createdAt = getTimestamp("created_at").toInstant(),
+        updatedAt = getTimestamp("updated_at").toInstant()
+    )
+
+    private fun ResultSet.toAuthSession() = AuthSession(
+        id = getObject("id", UUID::class.java), userId = getLong("user_id"),
+        refreshTokenHash = getString("refresh_token_hash"), createdAt = getTimestamp("created_at").toInstant(),
+        accessTokenExpiresAt = getTimestamp("access_token_expires_at").toInstant(),
+        refreshTokenExpiresAt = getTimestamp("refresh_token_expires_at").toInstant(),
+        revokedAt = getTimestamp("revoked_at")?.toInstant(), deviceName = getString("device_name"),
+        clientPlatform = getString("client_platform"), lastUsedAt = getTimestamp("last_used_at")?.toInstant()
+    )
+
+    private fun ResultSet.toAuthUsers(): List<AuthUser> = buildList {
+        while (next()) add(toAuthUser())
+    }
+}
+
+internal class AuthStorageUnavailableException : IllegalStateException("Authentication storage is unavailable")
+internal class DuplicateUserException : IllegalStateException("User already exists")
