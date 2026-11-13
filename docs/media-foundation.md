@@ -19,6 +19,11 @@ Không thay `docs/api-contract.md`, Message, schema CHAT/AUTH, WebSocket hay JWT
 | D08 | Ảnh attachment, thumbnail và retry upload | DONE ở mức MEDIA boundary; chưa nối root CHAT |
 | D09 | Video/audio/file upload, download và mở preview | DONE ở mức MIME/HTTP adapter/dev endpoint; thiết bị NOT VERIFIED |
 | D10 | Test và bàn giao `media-upload-download` | DONE ở mức local build/test; chưa push/PR |
+| D11 | MediaRecorder, microphone permission và lifecycle | DONE ở mức source/build; cần test thiết bị thật |
+| D12 | Press-and-hold voice UI, timer, cancel và preview | DONE ở mức source/build; cần test thiết bị thật |
+| D13 | Audio upload và `VOICE` attachment metadata | DONE ở mức contract/dev adapter; CHAT wiring chờ owner CHAT |
+| D14 | Playback pause/resume/progress/duration và interruption | DONE ở mức source/unit test; audio focus/headset cần test thiết bị |
+| D15 | Bàn giao `voice-message-v1` | DONE local; chưa push/PR, chưa xác nhận thiết bị thứ hai |
 
 Không báo upload PASS thành ảnh đã tới máy người nhận. Android không giả dữ liệu upload thành công: service mặc định luôn báo INTEGRATION_BLOCKED.
 
@@ -39,7 +44,7 @@ Root navigation/MainActivity và CHAT giữ nguyên. D05 thêm `MediaDebugActivi
 | Preview ảnh | Decode có inSampleSize giới hạn thumbnail ~512px; không đọc toàn file vào RAM |
 | Preview video | Scaled frame Android API27+; API24–26 dùng external viewer; chưa playback trong app |
 | Preview PDF/TXT/video | ACTION_VIEW với read URI grant, xử lý thiếu app/quyền |
-| Camera/micro/location/notifications | Chưa yêu cầu; ngoài foundation này |
+| Camera/micro/location/notifications | Microphone đã có runtime permission; camera/location/notifications chưa yêu cầu |
 | HTTP upload | `HttpMediaUploadService` dùng shared JWT, multipart và không follow redirect; host phải cấu hình endpoint/cleartext theo môi trường |
 
 State sống qua rotation nếu host lấy ViewModel từ ViewModelStore đúng cách. Không claim restore sau process death; chưa SavedStateHandle/persist selection/upload queue.
@@ -122,6 +127,18 @@ Lỗi theo `ApiErrorResponse` chung: 400 VALIDATION_ERROR; 401 UNAUTHORIZED (JWT
 - File staging chỉ publish metadata sau khi đọc hết một multipart request có boundary đóng hợp lệ. Sai MIME, quá file/request size hoặc quota, extra part, cancel, timeout, body thiếu delimiter hoặc lỗi trước publish sẽ dọn staging. Nếu staging deletion thất bại, quota được giữ bảo thủ và orphan vẫn chiếm dung lượng; dev storage reconcile khi khởi động bằng cách quét file trên disk. Cancel sau publish có thể đã lưu object dù client không nhận response: chưa upload idempotency/reconciliation.
 - Request-body bridge hiện dùng `PipelineRequest.setReceiveChannel` được đánh dấu `InternalAPI` của Ktor 3.4.3 để đặt bộ đếm trước multipart parser. Không nâng Ktor nếu chưa kiểm tra lại hook này và chạy Netty regression.
 - Root dev storage là cấu hình tin cậy của server; chưa bảo vệ trước người có quyền sửa filesystem trên máy server. Không multi-instance, per-user quota hoặc background cleanup.
+
+## Voice message D11–D15
+
+`VoiceAttachment.messageType` luôn là `VOICE`, kèm `mediaId`, `mimeType`, `byteSize`
+và `durationMs`. MEDIA chỉ tạo/upload attachment; CHAT chịu trách nhiệm tạo
+`Message.clientMessageId`, gửi message realtime, ACK và trạng thái delivered/read.
+Không coi `mediaId` là message đã gửi cho tới khi CHAT xác nhận ACK.
+
+Recorder dùng `MediaRecorder` MPEG-4/AAC vào file tạm trong cache, xóa file khi
+hủy/lifecycle interruption. Playback dùng `MediaPlayer`, hỗ trợ pause/resume,
+progress và dừng khi Activity vào background. Việc kiểm chứng tai nghe/audio focus,
+microphone denial và phát trên thiết bị thứ hai vẫn cần test thiết bị thật.
 
 ## Contract production đề xuất — BLOCKED
 
