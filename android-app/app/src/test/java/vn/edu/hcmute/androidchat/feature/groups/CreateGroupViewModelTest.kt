@@ -168,5 +168,23 @@ class CreateGroupViewModelTest {
             members.removeAll { it.userId == targetUserId }
             return Result.success(Unit)
         }
+
+        override suspend fun editMessage(baseUrl: String, accessToken: String, messageId: Long, currentUserId: Long, content: String) =
+            Result.failure<MessageUiModel>(UnsupportedOperationException())
+
+        override suspend fun recallMessage(baseUrl: String, accessToken: String, messageId: Long, currentUserId: Long) =
+            Result.failure<MessageUiModel>(UnsupportedOperationException())
+
+        override suspend fun forwardMessage(
+            baseUrl: String,
+            accessToken: String,
+            sourceMessageId: Long,
+            targetConversationId: Long,
+            clientMessageId: String,
+            currentUserId: Long
+        ) = Result.failure<MessageUiModel>(UnsupportedOperationException())
+
+        override suspend fun toggleReaction(baseUrl: String, accessToken: String, messageId: Long, emoji: String) =
+            Result.success(emptyMap<String, Int>())
     }
 }

@@ -120,4 +120,22 @@ class ChatRealtimeParserTest {
         assertTrue(ChatRealtimeParser.decodeEvent("not-json") == null)
         assertNull(ChatRealtimeParser.decodeEvent("""{"type":"unknown","payload":{}}"""))
     }
+
+    @Test
+    fun decodeMessageUpdatedRecalledAndReactionEvents() {
+        val updatedJson = """{"type":"message.updated","payload":{"conversationId":101,"messageId":55,"content":"Edited!","editedAt":"2026-11-13T11:30:00Z"}}"""
+        val updated = ChatRealtimeParser.decodeEvent(updatedJson) as? ChatServerEvent.MessageUpdated
+        assertNotNull(updated)
+        assertEquals("Edited!", updated!!.content)
+
+        val recalledJson = """{"type":"message.recalled","payload":{"conversationId":101,"messageId":55,"deletedAt":"2026-11-13T11:31:00Z"}}"""
+        val recalled = ChatRealtimeParser.decodeEvent(recalledJson) as? ChatServerEvent.MessageRecalled
+        assertNotNull(recalled)
+        assertEquals(55L, recalled!!.messageId)
+
+        val reactionJson = """{"type":"message.reaction","payload":{"conversationId":101,"messageId":55,"userId":99,"emoji":"❤️","added":true,"counts":{"❤️":2}}}"""
+        val reaction = ChatRealtimeParser.decodeEvent(reactionJson) as? ChatServerEvent.ReactionUpdated
+        assertNotNull(reaction)
+        assertEquals(2, reaction!!.counts["❤️"])
+    }
 }

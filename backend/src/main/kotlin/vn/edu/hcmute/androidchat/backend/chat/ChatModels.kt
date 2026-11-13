@@ -56,10 +56,12 @@ data class MessageDto(
     val content: String? = null,
     val mediaRef: Long? = null,
     val replyToId: Long? = null,
+    val forwardedFromId: Long? = null,
     val metadata: JsonObject = buildJsonObject {},
     val createdAt: String,
     val editedAt: String? = null,
-    val deletedAt: String? = null
+    val deletedAt: String? = null,
+    val reactions: Map<String, List<Long>> = emptyMap()
 )
 
 @Serializable
@@ -70,7 +72,43 @@ data class MessageSendPayload(
     val content: String? = null,
     val mediaRef: Long? = null,
     val replyToId: Long? = null,
+    val forwardedFromId: Long? = null,
     val metadata: JsonObject = buildJsonObject {}
+)
+
+@Serializable
+data class EditMessageRequest(
+    val content: String
+)
+
+@Serializable
+data class ForwardMessageRequest(
+    val targetConversationId: Long,
+    val clientMessageId: String
+)
+
+@Serializable
+data class ToggleReactionRequest(
+    val emoji: String
+)
+
+@Serializable
+data class MessageUpdatedPayload(
+    val conversationId: Long,
+    val messageId: Long,
+    val content: String? = null,
+    val editedAt: String? = null,
+    val deletedAt: String? = null
+)
+
+@Serializable
+data class ReactionUpdatedPayload(
+    val conversationId: Long,
+    val messageId: Long,
+    val userId: Long,
+    val emoji: String,
+    val added: Boolean,
+    val counts: Map<String, Int>
 )
 
 @Serializable

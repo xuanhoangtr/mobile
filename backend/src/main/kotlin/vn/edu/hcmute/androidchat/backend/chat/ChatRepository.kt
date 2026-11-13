@@ -63,6 +63,21 @@ interface ChatRepository {
         status: String,
         nowIso: String
     ): GroupOpResult<ReceiptPayload>
+    suspend fun editMessage(userId: Long, messageId: Long, newContent: String, nowIso: String): GroupOpResult<MessageDto>
+    suspend fun recallMessage(userId: Long, messageId: Long, nowIso: String): GroupOpResult<MessageDto>
+    suspend fun forwardMessage(
+        userId: Long,
+        sourceMessageId: Long,
+        targetConversationId: Long,
+        clientMessageId: String,
+        nowIso: String
+    ): GroupOpResult<MessageDto>
+    suspend fun toggleReaction(
+        userId: Long,
+        messageId: Long,
+        emoji: String,
+        nowIso: String
+    ): GroupOpResult<ReactionUpdatedPayload>
     suspend fun listMessages(userId: Long, conversationId: Long, cursor: Long? = null, limit: Int = 30): CursorPage<MessageDto>?
     suspend fun saveMessage(senderId: Long, payload: MessageSendPayload, nowIso: String): SaveMessageResult
     suspend fun activeMemberIds(conversationId: Long): Set<Long>
@@ -623,6 +638,268 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
         }
     }
 
+    override suspend fun editMessage(
+        userId: Long,
+        messageId: Long,
+        newContent: String,
+        nowIso: String
+    ): GroupOpResult<MessageDto> = withContext(Dispatchers.IO) {
+        val trimmed = newContent.trim()
+        if (trimmed.isEmpty()) {
+            return@withContext GroupOpResult.Err(400, "VALIDATION_ERROR", "Edited content cannot be blank")
+        }
+        val timestamp = Timestamp.from(Instant.parse(nowIso))
+        dataSource.connection.use { conn ->
+            val selectSql = "SELECT conversation_id, sender_id, type, deleted_at FROM messages WHERE id = ?"
+            var convId = 0L
+            var senderId = 0L
+            var msgType = ""
+            var deletedAt: Timestamp? = null
+            conn.prepareStatement(selectSql).use { stmt ->
+                stmt.setLong(1, messageId)
+                stmt.executeQuery().use { rs ->
+                    if (!rs.next()) return@withContext GroupOpResult.Err(404, "NOT_FOUND", "Message not found")
+                    convId = rs.getLong("conversation_id")
+                    senderId = rs.getLong("sender_id")
+                    msgType = rs.getString("type")
+                    deletedAt = rs.getTimestamp("deleted_at")
+                }
+            }
+            if (!isActiveMember(conn, convId, userId) || senderId != userId) {
+                return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Only the sender can edit this message")
+            }
+            if (msgType != "TEXT" || deletedAt != null) {
+                return@withContext GroupOpResult.Err(400, "VALIDATION_ERROR", "Only active TEXT messages can be edited")
+            }
+            val updateSql = """
+                UPDATE messages SET content = ?, edited_at = ? WHERE id = ?
+                RETURNING id, client_message_id, conversation_id, sender_id, type, content,
+                          media_ref, reply_to_id, metadata::text, created_at, edited_at, deleted_at
+            """.trimIndent()
+            conn.prepareStatement(updateSql).use { stmt ->
+                stmt.setString(1, trimmed)
+                stmt.setTimestamp(2, timestamp)
+                stmt.setLong(3, messageId)
+                stmt.executeQuery().use { rs ->
+                    rs.next()
+                    val metadataText = rs.getString("metadata") ?: "{}"
+                    GroupOpResult.Ok(
+                        MessageDto(
+                            id = rs.getLong("id"),
+                            clientMessageId = rs.getObject("client_message_id").toString(),
+                            conversationId = rs.getLong("conversation_id"),
+                            senderId = rs.getLong("sender_id"),
+                            type = rs.getString("type"),
+                            content = rs.getString("content"),
+                            mediaRef = rs.getLong("media_ref").takeUnless { rs.wasNull() },
+                            replyToId = rs.getLong("reply_to_id").takeUnless { rs.wasNull() },
+                            metadata = AppJson.decodeFromString<JsonObject>(metadataText),
+                            createdAt = rs.getTimestamp("created_at").toInstant().toString(),
+                            editedAt = rs.getTimestamp("edited_at")?.toInstant()?.toString(),
+                            deletedAt = rs.getTimestamp("deleted_at")?.toInstant()?.toString()
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    override suspend fun recallMessage(
+        userId: Long,
+        messageId: Long,
+        nowIso: String
+    ): GroupOpResult<MessageDto> = withContext(Dispatchers.IO) {
+        val timestamp = Timestamp.from(Instant.parse(nowIso))
+        dataSource.connection.use { conn ->
+            val selectSql = "SELECT conversation_id, sender_id FROM messages WHERE id = ?"
+            var convId = 0L
+            var senderId = 0L
+            conn.prepareStatement(selectSql).use { stmt ->
+                stmt.setLong(1, messageId)
+                stmt.executeQuery().use { rs ->
+                    if (!rs.next()) return@withContext GroupOpResult.Err(404, "NOT_FOUND", "Message not found")
+                    convId = rs.getLong("conversation_id")
+                    senderId = rs.getLong("sender_id")
+                }
+            }
+            val role = activeMemberRole(conn, convId, userId)
+                ?: return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+            if (senderId != userId && role != "OWNER" && role != "ADMIN") {
+                return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Insufficient permission to recall message")
+            }
+            val updateSql = """
+                UPDATE messages SET deleted_at = COALESCE(deleted_at, ?), content = '' WHERE id = ?
+                RETURNING id, client_message_id, conversation_id, sender_id, type, content,
+                          media_ref, reply_to_id, metadata::text, created_at, edited_at, deleted_at
+            """.trimIndent()
+            conn.prepareStatement(updateSql).use { stmt ->
+                stmt.setTimestamp(1, timestamp)
+                stmt.setLong(2, messageId)
+                stmt.executeQuery().use { rs ->
+                    rs.next()
+                    val metadataText = rs.getString("metadata") ?: "{}"
+                    GroupOpResult.Ok(
+                        MessageDto(
+                            id = rs.getLong("id"),
+                            clientMessageId = rs.getObject("client_message_id").toString(),
+                            conversationId = rs.getLong("conversation_id"),
+                            senderId = rs.getLong("sender_id"),
+                            type = rs.getString("type"),
+                            content = rs.getString("content"),
+                            mediaRef = rs.getLong("media_ref").takeUnless { rs.wasNull() },
+                            replyToId = rs.getLong("reply_to_id").takeUnless { rs.wasNull() },
+                            metadata = AppJson.decodeFromString<JsonObject>(metadataText),
+                            createdAt = rs.getTimestamp("created_at").toInstant().toString(),
+                            editedAt = rs.getTimestamp("edited_at")?.toInstant()?.toString(),
+                            deletedAt = rs.getTimestamp("deleted_at")?.toInstant()?.toString()
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    override suspend fun forwardMessage(
+        userId: Long,
+        sourceMessageId: Long,
+        targetConversationId: Long,
+        clientMessageId: String,
+        nowIso: String
+    ): GroupOpResult<MessageDto> = withContext(Dispatchers.IO) {
+        if (clientMessageId.isBlank() || targetConversationId <= 0L) {
+            return@withContext GroupOpResult.Err(400, "VALIDATION_ERROR", "clientMessageId and valid targetConversationId required")
+        }
+        val timestamp = Timestamp.from(Instant.parse(nowIso))
+        val clientUuid = UUID.fromString(clientMessageId)
+        dataSource.connection.use { conn ->
+            if (!isActiveMember(conn, targetConversationId, userId)) {
+                return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not a member of target conversation")
+            }
+            val selectSql = "SELECT conversation_id, type, content, media_ref, metadata::text, deleted_at FROM messages WHERE id = ?"
+            var srcConvId = 0L
+            var srcType = "TEXT"
+            var srcContent: String? = null
+            var srcMediaRef: Long? = null
+            var srcMetadata = "{}"
+            var srcDeleted: Timestamp? = null
+            conn.prepareStatement(selectSql).use { stmt ->
+                stmt.setLong(1, sourceMessageId)
+                stmt.executeQuery().use { rs ->
+                    if (!rs.next()) return@withContext GroupOpResult.Err(404, "NOT_FOUND", "Source message not found")
+                    srcConvId = rs.getLong("conversation_id")
+                    srcType = rs.getString("type")
+                    srcContent = rs.getString("content")
+                    srcMediaRef = rs.getLong("media_ref").takeUnless { rs.wasNull() }
+                    srcMetadata = rs.getString("metadata") ?: "{}"
+                    srcDeleted = rs.getTimestamp("deleted_at")
+                }
+            }
+            if (!isActiveMember(conn, srcConvId, userId)) {
+                return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not a member of source conversation")
+            }
+            if (srcDeleted != null) {
+                return@withContext GroupOpResult.Err(400, "VALIDATION_ERROR", "Cannot forward a recalled message")
+            }
+            val insertSql = """
+                INSERT INTO messages (client_message_id, conversation_id, sender_id, type, content, media_ref, forwarded_from_id, metadata, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?)
+                RETURNING id, created_at
+            """.trimIndent()
+            conn.prepareStatement(insertSql).use { stmt ->
+                stmt.setObject(1, clientUuid)
+                stmt.setLong(2, targetConversationId)
+                stmt.setLong(3, userId)
+                stmt.setString(4, srcType)
+                stmt.setString(5, srcContent)
+                if (srcMediaRef != null) stmt.setLong(6, srcMediaRef) else stmt.setNull(6, java.sql.Types.BIGINT)
+                stmt.setLong(7, sourceMessageId)
+                stmt.setString(8, srcMetadata)
+                stmt.setTimestamp(9, timestamp)
+                stmt.executeQuery().use { rs ->
+                    rs.next()
+                    GroupOpResult.Ok(
+                        MessageDto(
+                            id = rs.getLong("id"),
+                            clientMessageId = clientMessageId,
+                            conversationId = targetConversationId,
+                            senderId = userId,
+                            type = srcType,
+                            content = srcContent,
+                            mediaRef = srcMediaRef,
+                            forwardedFromId = sourceMessageId,
+                            metadata = AppJson.decodeFromString<JsonObject>(srcMetadata),
+                            createdAt = rs.getTimestamp("created_at").toInstant().toString()
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    override suspend fun toggleReaction(
+        userId: Long,
+        messageId: Long,
+        emoji: String,
+        nowIso: String
+    ): GroupOpResult<ReactionUpdatedPayload> = withContext(Dispatchers.IO) {
+        val trimmedEmoji = emoji.trim()
+        if (trimmedEmoji.isEmpty() || trimmedEmoji.length > 16) {
+            return@withContext GroupOpResult.Err(400, "VALIDATION_ERROR", "Invalid emoji")
+        }
+        val timestamp = Timestamp.from(Instant.parse(nowIso))
+        dataSource.connection.use { conn ->
+            val convSql = "SELECT conversation_id FROM messages WHERE id = ?"
+            val convId = conn.prepareStatement(convSql).use { stmt ->
+                stmt.setLong(1, messageId)
+                stmt.executeQuery().use { rs ->
+                    if (!rs.next()) return@withContext GroupOpResult.Err(404, "NOT_FOUND", "Message not found")
+                    rs.getLong("conversation_id")
+                }
+            }
+            if (!isActiveMember(conn, convId, userId)) {
+                return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+            }
+            val delSql = "DELETE FROM message_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?"
+            val deleted = conn.prepareStatement(delSql).use { stmt ->
+                stmt.setLong(1, messageId)
+                stmt.setLong(2, userId)
+                stmt.setString(3, trimmedEmoji)
+                stmt.executeUpdate()
+            }
+            val added = deleted == 0
+            if (added) {
+                val insSql = "INSERT INTO message_reactions (message_id, user_id, emoji, created_at) VALUES (?, ?, ?, ?)"
+                conn.prepareStatement(insSql).use { stmt ->
+                    stmt.setLong(1, messageId)
+                    stmt.setLong(2, userId)
+                    stmt.setString(3, trimmedEmoji)
+                    stmt.setTimestamp(4, timestamp)
+                    stmt.executeUpdate()
+                }
+            }
+            val countSql = "SELECT emoji, COUNT(*) AS cnt FROM message_reactions WHERE message_id = ? GROUP BY emoji"
+            val counts = mutableMapOf<String, Int>()
+            conn.prepareStatement(countSql).use { stmt ->
+                stmt.setLong(1, messageId)
+                stmt.executeQuery().use { rs ->
+                    while (rs.next()) {
+                        counts[rs.getString("emoji")] = rs.getInt("cnt")
+                    }
+                }
+            }
+            GroupOpResult.Ok(
+                ReactionUpdatedPayload(
+                    conversationId = convId,
+                    messageId = messageId,
+                    userId = userId,
+                    emoji = trimmedEmoji,
+                    added = added,
+                    counts = counts
+                )
+            )
+        }
+    }
+
     private fun activeMemberRole(conn: java.sql.Connection, conversationId: Long, userId: Long): String? {
         val sql = """
             SELECT role FROM conversation_members
@@ -659,6 +936,7 @@ class InMemoryChatRepository : ChatRepository {
     private val membersByConversation = ConcurrentHashMap<Long, MutableSet<Long>>()
     private val memberRolesByConversation = ConcurrentHashMap<Long, ConcurrentHashMap<Long, ConversationMemberDto>>()
     private val receiptsByMessageUser = ConcurrentHashMap<String, String>()
+    private val reactionsByMessage = ConcurrentHashMap<Long, ConcurrentHashMap<String, MutableSet<Long>>>()
     private val messagesByConversation = ConcurrentHashMap<Long, CopyOnWriteArrayList<MessageDto>>()
     private val dedupIndex = ConcurrentHashMap<String, MessageDto>()
     private val nextConversationId = AtomicLong(1000L)
@@ -995,6 +1273,138 @@ class InMemoryChatRepository : ChatRepository {
                 userId = userId,
                 status = finalStatus,
                 at = nowIso
+            )
+        )
+    }
+
+    override suspend fun editMessage(
+        userId: Long,
+        messageId: Long,
+        newContent: String,
+        nowIso: String
+    ): GroupOpResult<MessageDto> {
+        val trimmed = newContent.trim()
+        if (trimmed.isEmpty()) {
+            return GroupOpResult.Err(400, "VALIDATION_ERROR", "Edited content cannot be blank")
+        }
+        for ((convId, list) in messagesByConversation) {
+            val idx = list.indexOfFirst { it.id == messageId }
+            if (idx >= 0) {
+                val msg = list[idx]
+                val members = membersByConversation[convId]
+                if ((members != null && userId !in members) || msg.senderId != userId) {
+                    return GroupOpResult.Err(403, "FORBIDDEN", "Only the sender can edit this message")
+                }
+                if (msg.type != "TEXT" || msg.deletedAt != null) {
+                    return GroupOpResult.Err(400, "VALIDATION_ERROR", "Only active TEXT messages can be edited")
+                }
+                val updated = msg.copy(content = trimmed, editedAt = nowIso)
+                list[idx] = updated
+                return GroupOpResult.Ok(updated)
+            }
+        }
+        return GroupOpResult.Err(404, "NOT_FOUND", "Message not found")
+    }
+
+    override suspend fun recallMessage(
+        userId: Long,
+        messageId: Long,
+        nowIso: String
+    ): GroupOpResult<MessageDto> {
+        for ((convId, list) in messagesByConversation) {
+            val idx = list.indexOfFirst { it.id == messageId }
+            if (idx >= 0) {
+                val msg = list[idx]
+                val members = membersByConversation[convId]
+                if (members != null && userId !in members) {
+                    return GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+                }
+                val role = memberRolesByConversation[convId]?.get(userId)?.role ?: "MEMBER"
+                if (msg.senderId != userId && role != "OWNER" && role != "ADMIN") {
+                    return GroupOpResult.Err(403, "FORBIDDEN", "Insufficient permission to recall message")
+                }
+                val updated = msg.copy(content = "", deletedAt = msg.deletedAt ?: nowIso)
+                list[idx] = updated
+                return GroupOpResult.Ok(updated)
+            }
+        }
+        return GroupOpResult.Err(404, "NOT_FOUND", "Message not found")
+    }
+
+    override suspend fun forwardMessage(
+        userId: Long,
+        sourceMessageId: Long,
+        targetConversationId: Long,
+        clientMessageId: String,
+        nowIso: String
+    ): GroupOpResult<MessageDto> {
+        if (clientMessageId.isBlank() || targetConversationId <= 0L) {
+            return GroupOpResult.Err(400, "VALIDATION_ERROR", "clientMessageId and valid targetConversationId required")
+        }
+        val targetMembers = membersByConversation[targetConversationId]
+        if (targetMembers != null && userId !in targetMembers) {
+            return GroupOpResult.Err(403, "FORBIDDEN", "Not a member of target conversation")
+        }
+        val source = messagesByConversation.values.flatten().firstOrNull { it.id == sourceMessageId }
+            ?: return GroupOpResult.Err(404, "NOT_FOUND", "Source message not found")
+        val sourceMembers = membersByConversation[source.conversationId]
+        if (sourceMembers != null && userId !in sourceMembers) {
+            return GroupOpResult.Err(403, "FORBIDDEN", "Not a member of source conversation")
+        }
+        if (source.deletedAt != null) {
+            return GroupOpResult.Err(400, "VALIDATION_ERROR", "Cannot forward a recalled message")
+        }
+        val newId = nextMessageId.getAndIncrement()
+        val forwarded = MessageDto(
+            id = newId,
+            clientMessageId = clientMessageId,
+            conversationId = targetConversationId,
+            senderId = userId,
+            type = source.type,
+            content = source.content,
+            mediaRef = source.mediaRef,
+            forwardedFromId = source.id,
+            metadata = source.metadata,
+            createdAt = nowIso
+        )
+        messagesByConversation.computeIfAbsent(targetConversationId) { CopyOnWriteArrayList() }.add(forwarded)
+        return GroupOpResult.Ok(forwarded)
+    }
+
+    override suspend fun toggleReaction(
+        userId: Long,
+        messageId: Long,
+        emoji: String,
+        nowIso: String
+    ): GroupOpResult<ReactionUpdatedPayload> {
+        val trimmedEmoji = emoji.trim()
+        if (trimmedEmoji.isEmpty() || trimmedEmoji.length > 16) {
+            return GroupOpResult.Err(400, "VALIDATION_ERROR", "Invalid emoji")
+        }
+        val msg = messagesByConversation.values.flatten().firstOrNull { it.id == messageId }
+            ?: return GroupOpResult.Err(404, "NOT_FOUND", "Message not found")
+        val members = membersByConversation[msg.conversationId]
+        if (members != null && userId !in members) {
+            return GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+        }
+        val byEmoji = reactionsByMessage.computeIfAbsent(messageId) { ConcurrentHashMap() }
+        val users = byEmoji.computeIfAbsent(trimmedEmoji) { ConcurrentHashMap.newKeySet() }
+        val added = if (userId in users) {
+            users.remove(userId)
+            false
+        } else {
+            users.add(userId)
+            true
+        }
+        val counts = byEmoji.mapValues { it.value.size }.filterValues { it > 0 }
+        return GroupOpResult.Ok(
+            ReactionUpdatedPayload(
+                conversationId = msg.conversationId,
+                messageId = messageId,
+                userId = userId,
+                emoji = trimmedEmoji,
+                added = added,
+                counts = counts
             )
         )
     }

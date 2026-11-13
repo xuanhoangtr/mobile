@@ -19,6 +19,7 @@ import io.ktor.server.websocket.pingPeriod
 import io.ktor.server.websocket.timeout
 import org.slf4j.event.Level
 import vn.edu.hcmute.androidchat.backend.chat.ChatRepository
+import vn.edu.hcmute.androidchat.backend.chat.ChatSessionRegistry
 import vn.edu.hcmute.androidchat.backend.chat.InMemoryChatRepository
 import vn.edu.hcmute.androidchat.backend.chat.PostgresChatRepository
 import vn.edu.hcmute.androidchat.backend.chat.registerChatRoutes
@@ -100,8 +101,9 @@ fun Application.module(
             )
         }
 
-        registerChatRoutes(chatRepository)
-        registerChatWebSocketRoutes(chatRepository)
+        val chatSessions = ChatSessionRegistry()
+        registerChatRoutes(chatRepository, chatSessions)
+        registerChatWebSocketRoutes(chatRepository, chatSessions)
         registerGroupRoutes()
     }
 }

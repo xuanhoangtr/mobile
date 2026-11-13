@@ -311,6 +311,58 @@ class ChatViewModelsTest {
         assertEquals("2026-11-13T11:26:00Z", vm.uiState.value.peerLastSeenAt)
     }
 
+    @Test
+    fun chatRoomViewModelHandlesTypingAndReplyJumpEditRecallForwardCopyAndReactions() = runTest {
+        val fakeTransport = FakeChatRealtimeTransport()
+        val fakeApi = FakeChatApiService()
+        val vm = ChatRoomViewModel(transport = fakeTransport, apiService = fakeApi)
+
+        fakeTransport.connectionStateFlow.value = WsConnectionState.CONNECTED
+        vm.openConversation(conversationId = 101L, title = "Room", currentUserId = 42L)
+
+        // Typing from other conversation is ignored; typing from current conversation shows up
+        fakeTransport.eventsFlow.emit(ChatServerEvent.Typing(999L, 99L, true, 5_000L))
+        assertTrue(vm.uiState.value.typingUserNames.isEmpty())
+        fakeTransport.eventsFlow.emit(ChatServerEvent.Typing(101L, 99L, true, 5_000L))
+        assertEquals(listOf("User #99"), vm.uiState.value.typingUserNames)
+        fakeTransport.eventsFlow.emit(ChatServerEvent.Typing(101L, 99L, false, 0L))
+        assertTrue(vm.uiState.value.typingUserNames.isEmpty())
+
+        // Send original message + reply to it + jump-to-message index
+        vm.onDraftChanged("Parent message")
+        val parent = vm.queueOutgoingTextMessage(42L, "11:30")!!
+        fakeTransport.eventsFlow.emit(ChatServerEvent.MessageAck(parent.clientMessageId, 101L, 501L, "ACCEPTED", "11:30:01"))
+
+        val parentMsg = vm.uiState.value.messages.single()
+        assertEquals("Parent message", vm.getCopyableText(parentMsg))
+        vm.setReplyingTo(parentMsg)
+        vm.onDraftChanged("Reply message")
+        val reply = vm.queueOutgoingTextMessage(42L, "11:31")!!
+        assertEquals(501L, reply.replyToId)
+        assertEquals(0, vm.findReplyTargetIndex(reply.replyToId!!))
+
+        // Edit parent message
+        vm.startEditing(parentMsg)
+        vm.onDraftChanged("Edited parent")
+        vm.submitEdit("http://localhost:8080", "tok")
+        assertEquals("Edited parent", vm.uiState.value.messages[0].content)
+        assertTrue(vm.uiState.value.messages[0].isEdited)
+
+        // Toggle reaction
+        vm.toggleReaction("http://localhost:8080", "tok", 501L, "👍")
+        assertEquals(1, vm.uiState.value.messages[0].reactionCounts["👍"])
+
+        // Forward message
+        var forwardedTargetId = 0L
+        vm.forwardMessage("http://localhost:8080", "tok", 501L, 202L) { forwardedTargetId = it.conversationId }
+        assertEquals(202L, forwardedTargetId)
+
+        // Recall message -> copyable text becomes null
+        vm.recallMessage("http://localhost:8080", "tok", 501L)
+        assertTrue(vm.uiState.value.messages[0].isRecalled)
+        assertNull(vm.getCopyableText(vm.uiState.value.messages[0]))
+    }
+
     private class FakeChatRealtimeTransport : ChatRealtimeTransport {
         val connectionStateFlow = MutableStateFlow(WsConnectionState.DISCONNECTED)
         val eventsFlow = MutableSharedFlow<ChatServerEvent>(extraBufferCapacity = 16)
@@ -457,6 +509,37 @@ class ChatViewModelsTest {
             conversationId: Long,
             targetUserId: Long
         ) = Result.success(Unit)
+
+        override suspend fun editMessage(
+            baseUrl: String,
+            accessToken: String,
+            messageId: Long,
+            currentUserId: Long,
+            content: String
+        ) = Result.success(sampleMsg(messageId, 101L, content).copy(isEdited = true))
+
+        override suspend fun recallMessage(
+            baseUrl: String,
+            accessToken: String,
+            messageId: Long,
+            currentUserId: Long
+        ) = Result.success(sampleMsg(messageId, 101L, "").copy(isRecalled = true))
+
+        override suspend fun forwardMessage(
+            baseUrl: String,
+            accessToken: String,
+            sourceMessageId: Long,
+            targetConversationId: Long,
+            clientMessageId: String,
+            currentUserId: Long
+        ) = Result.success(sampleMsg(999L, targetConversationId, "Forwarded").copy(forwardedFromId = sourceMessageId))
+
+        override suspend fun toggleReaction(
+            baseUrl: String,
+            accessToken: String,
+            messageId: Long,
+            emoji: String
+        ) = Result.success(mapOf(emoji to 1))
     }
 
     private class FakeChatLocalCache : ChatLocalCache {

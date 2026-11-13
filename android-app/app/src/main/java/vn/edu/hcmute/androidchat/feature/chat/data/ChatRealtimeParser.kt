@@ -117,6 +117,38 @@ object ChatRealtimeParser {
                     message = payload.optString("message", "WebSocket error")
                 )
 
+                "message.updated" -> ChatServerEvent.MessageUpdated(
+                    conversationId = payload.getLong("conversationId"),
+                    messageId = payload.getLong("messageId"),
+                    content = payload.optString("content", ""),
+                    editedAt = payload.optString("editedAt", "")
+                )
+
+                "message.recalled" -> ChatServerEvent.MessageRecalled(
+                    conversationId = payload.getLong("conversationId"),
+                    messageId = payload.getLong("messageId"),
+                    deletedAt = payload.optString("deletedAt", "")
+                )
+
+                "message.reaction" -> {
+                    val countsObj = payload.optJSONObject("counts") ?: JSONObject()
+                    val counts = buildMap {
+                        val keys = countsObj.keys()
+                        while (keys.hasNext()) {
+                            val k = keys.next()
+                            put(k, countsObj.optInt(k, 0))
+                        }
+                    }
+                    ChatServerEvent.ReactionUpdated(
+                        conversationId = payload.getLong("conversationId"),
+                        messageId = payload.getLong("messageId"),
+                        userId = payload.optLong("userId", 0L),
+                        emoji = payload.optString("emoji", ""),
+                        added = payload.optBoolean("added", false),
+                        counts = counts
+                    )
+                }
+
                 else -> null
             }
         }.getOrNull()

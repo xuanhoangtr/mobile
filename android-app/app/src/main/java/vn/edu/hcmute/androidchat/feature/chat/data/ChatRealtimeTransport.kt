@@ -52,6 +52,28 @@ sealed interface ChatServerEvent {
         val code: String,
         val message: String
     ) : ChatServerEvent
+
+    data class MessageUpdated(
+        val conversationId: Long,
+        val messageId: Long,
+        val content: String,
+        val editedAt: String
+    ) : ChatServerEvent
+
+    data class MessageRecalled(
+        val conversationId: Long,
+        val messageId: Long,
+        val deletedAt: String
+    ) : ChatServerEvent
+
+    data class ReactionUpdated(
+        val conversationId: Long,
+        val messageId: Long,
+        val userId: Long,
+        val emoji: String,
+        val added: Boolean,
+        val counts: Map<String, Int>
+    ) : ChatServerEvent
 }
 
 interface ChatRealtimeTransport {

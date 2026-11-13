@@ -368,4 +368,87 @@ class ApplicationTest {
             assertEquals("READ", second["payload"]?.jsonObject?.get("status")?.jsonPrimitive?.content)
         }
     }
+
+    @Test
+    fun messageActionsEditRecallForwardAndReactionsEnforceOwnershipAndMembership() = testApplication {
+        val repo = InMemoryChatRepository().apply {
+            seedConversation(conversationId = 101L, memberIds = setOf(10L, 20L))
+            seedConversation(conversationId = 202L, memberIds = setOf(10L, 30L))
+            saveMessage(
+                senderId = 10L,
+                payload = MessageSendPayload("msg-edit-1", 101L, "TEXT", "Original text"),
+                nowIso = "2026-11-13T11:40:00Z"
+            )
+        }
+        application { module(testConfig, chatRepositoryOverride = repo) }
+
+        val token10 = issueTestToken(10L)
+        val token20 = issueTestToken(20L)
+
+        // User 20 cannot edit User 10's message -> 403
+        val forbiddenEdit = client.patch("/messages/1") {
+            header(HttpHeaders.Authorization, "Bearer $token20")
+            contentType(ContentType.Application.Json)
+            setBody("""{"content":"Hacked"}""")
+        }
+        assertEquals(HttpStatusCode.Forbidden, forbiddenEdit.status)
+
+        // User 10 edits own message -> 200 with editedAt
+        val okEdit = client.patch("/messages/1") {
+            header(HttpHeaders.Authorization, "Bearer $token10")
+            contentType(ContentType.Application.Json)
+            setBody("""{"content":"Updated text"}""")
+        }
+        assertEquals(HttpStatusCode.OK, okEdit.status)
+        val editedJson = AppJson.parseToJsonElement(okEdit.bodyAsText()).jsonObject
+        assertEquals("Updated text", editedJson["content"]?.jsonPrimitive?.content)
+        assertTrue(editedJson["editedAt"] != null)
+
+        // Toggle reaction add & remove
+        val reactAdd = client.post("/messages/1/reactions") {
+            header(HttpHeaders.Authorization, "Bearer $token20")
+            contentType(ContentType.Application.Json)
+            setBody("""{"emoji":"👍"}""")
+        }
+        assertEquals(HttpStatusCode.OK, reactAdd.status)
+        val reactAddJson = AppJson.parseToJsonElement(reactAdd.bodyAsText()).jsonObject
+        assertTrue(reactAddJson["added"]!!.jsonPrimitive.boolean)
+
+        val reactRemove = client.post("/messages/1/reactions") {
+            header(HttpHeaders.Authorization, "Bearer $token20")
+            contentType(ContentType.Application.Json)
+            setBody("""{"emoji":"👍"}""")
+        }
+        assertEquals(HttpStatusCode.OK, reactRemove.status)
+        assertEquals(false, AppJson.parseToJsonElement(reactRemove.bodyAsText()).jsonObject["added"]!!.jsonPrimitive.boolean)
+
+        // User 20 cannot forward to 202 (not a member of 202) -> 403
+        val forbiddenFwd = client.post("/messages/1/forward") {
+            header(HttpHeaders.Authorization, "Bearer $token20")
+            contentType(ContentType.Application.Json)
+            setBody("""{"targetConversationId":202,"clientMessageId":"fwd-1"}""")
+        }
+        assertEquals(HttpStatusCode.Forbidden, forbiddenFwd.status)
+
+        // User 10 forwards to 202 -> 201 Created with forwardedFromId = 1
+        val okFwd = client.post("/messages/1/forward") {
+            header(HttpHeaders.Authorization, "Bearer $token10")
+            contentType(ContentType.Application.Json)
+            setBody("""{"targetConversationId":202,"clientMessageId":"fwd-2"}""")
+        }
+        assertEquals(HttpStatusCode.Created, okFwd.status)
+        assertEquals(1L, AppJson.parseToJsonElement(okFwd.bodyAsText()).jsonObject["forwardedFromId"]?.jsonPrimitive?.long)
+
+        // User 10 recalls message 1 -> 200, then cannot edit recalled message -> 400
+        val okRecall = client.post("/messages/1/recall") {
+            header(HttpHeaders.Authorization, "Bearer $token10")
+        }
+        assertEquals(HttpStatusCode.OK, okRecall.status)
+        val editAfterRecall = client.patch("/messages/1") {
+            header(HttpHeaders.Authorization, "Bearer $token10")
+            contentType(ContentType.Application.Json)
+            setBody("""{"content":"Too late"}""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, editAfterRecall.status)
+    }
 }

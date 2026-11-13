@@ -55,8 +55,10 @@ data class MessageUiModel(
     val createdAt: String,
     val deliveryStatus: MessageDeliveryStatus = MessageDeliveryStatus.SENDING,
     val replyToId: Long? = null,
+    val forwardedFromId: Long? = null,
     val isEdited: Boolean = false,
-    val isRecalled: Boolean = false
+    val isRecalled: Boolean = false,
+    val reactionCounts: Map<String, Int> = emptyMap()
 )
 
 data class ChatListUiState(
@@ -88,6 +90,8 @@ data class ChatRoomUiState(
     val nextHistoryCursor: String? = null,
     val messages: List<MessageUiModel> = emptyList(),
     val draftText: String = "",
+    val replyingToMessage: MessageUiModel? = null,
+    val editingMessage: MessageUiModel? = null,
     val typingUserNames: List<String> = emptyList(),
     val isPeerOnline: Boolean = false,
     val peerLastSeenAt: String? = null,

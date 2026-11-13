@@ -2,6 +2,8 @@ package vn.edu.hcmute.androidchat.feature.chat.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,6 +33,8 @@ class ChatRoomViewModel(
     val uiState: StateFlow<ChatRoomUiState> = _uiState.asStateFlow()
 
     private var activeCurrentUserId: Long = 0L
+    private var typingDebounceJob: Job? = null
+    private val typingExpiryJobs = mutableMapOf<Long, Job>()
 
     init {
         if (transport != null) {
@@ -153,6 +157,38 @@ class ChatRoomViewModel(
 
     fun onDraftChanged(newText: String) {
         _uiState.update { it.copy(draftText = newText) }
+        val convId = _uiState.value.conversationId
+        val activeTransport = transport
+        if (convId > 0L && activeTransport != null &&
+            activeTransport.connectionState.value == WsConnectionState.CONNECTED
+        ) {
+            typingDebounceJob?.cancel()
+            typingDebounceJob = viewModelScope.launch {
+                delay(300L)
+                activeTransport.sendTyping(convId, newText.isNotBlank())
+            }
+        }
+    }
+
+    fun setReplyingTo(message: MessageUiModel?) {
+        _uiState.update { it.copy(replyingToMessage = message) }
+    }
+
+    fun findReplyTargetIndex(replyToId: Long): Int =
+        _uiState.value.messages.indexOfFirst { it.serverId == replyToId }
+
+    fun startEditing(message: MessageUiModel?) {
+        _uiState.update {
+            it.copy(
+                editingMessage = message,
+                draftText = message?.content ?: ""
+            )
+        }
+    }
+
+    fun getCopyableText(message: MessageUiModel): String? {
+        if (message.isRecalled || message.content.isBlank()) return null
+        return message.content
     }
 
     fun onConnectionStateChanged(state: WsConnectionState) {
@@ -177,12 +213,14 @@ class ChatRoomViewModel(
         val transportConnected = isTransportConnected ||
             (transport?.connectionState?.value == WsConnectionState.CONNECTED)
 
+        val replyId = currentState.replyingToMessage?.serverId
         val dispatched = if (transport != null && transportConnected) {
             transport.sendMessage(
                 clientMessageId = clientMsgId,
                 conversationId = currentState.conversationId,
                 content = trimmed,
-                type = MessageType.TEXT
+                type = MessageType.TEXT,
+                replyToId = replyId
             )
         } else {
             transport == null && transportConnected
@@ -197,6 +235,7 @@ class ChatRoomViewModel(
             type = MessageType.TEXT,
             content = trimmed,
             createdAt = createdAtLabel,
+            replyToId = replyId,
             deliveryStatus = if (dispatched) {
                 MessageDeliveryStatus.SENDING
             } else {
@@ -207,7 +246,8 @@ class ChatRoomViewModel(
         _uiState.update { state ->
             state.copy(
                 messages = state.messages + pendingMessage,
-                draftText = ""
+                draftText = "",
+                replyingToMessage = null
             )
         }
         persistCurrentMessages()
@@ -312,6 +352,98 @@ class ChatRoomViewModel(
         )
     }
 
+    fun submitEdit(baseUrl: String, accessToken: String) {
+        val editing = _uiState.value.editingMessage ?: return
+        val serverId = editing.serverId ?: return
+        val newContent = _uiState.value.draftText.trim()
+        val service = apiService ?: return
+        if (newContent.isEmpty()) return
+
+        viewModelScope.launch {
+            service.editMessage(baseUrl, accessToken, serverId, activeCurrentUserId, newContent)
+                .onSuccess { updated ->
+                    _uiState.update { state ->
+                        state.copy(
+                            editingMessage = null,
+                            draftText = "",
+                            messages = state.messages.map {
+                                if (it.serverId == serverId) it.copy(content = updated.content, isEdited = true) else it
+                            }
+                        )
+                    }
+                    persistCurrentMessages()
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(errorMessage = err.message ?: "Failed to edit message") }
+                }
+        }
+    }
+
+    fun recallMessage(baseUrl: String, accessToken: String, messageId: Long) {
+        val service = apiService ?: return
+        viewModelScope.launch {
+            service.recallMessage(baseUrl, accessToken, messageId, activeCurrentUserId)
+                .onSuccess {
+                    _uiState.update { state ->
+                        state.copy(
+                            messages = state.messages.map {
+                                if (it.serverId == messageId) it.copy(content = "", isRecalled = true) else it
+                            }
+                        )
+                    }
+                    persistCurrentMessages()
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(errorMessage = err.message ?: "Failed to recall message") }
+                }
+        }
+    }
+
+    fun forwardMessage(
+        baseUrl: String,
+        accessToken: String,
+        sourceMessageId: Long,
+        targetConversationId: Long,
+        onForwarded: (MessageUiModel) -> Unit = {}
+    ) {
+        val service = apiService ?: return
+        val clientMsgId = UUID.randomUUID().toString()
+        viewModelScope.launch {
+            service.forwardMessage(
+                baseUrl = baseUrl,
+                accessToken = accessToken,
+                sourceMessageId = sourceMessageId,
+                targetConversationId = targetConversationId,
+                clientMessageId = clientMsgId,
+                currentUserId = activeCurrentUserId
+            ).onSuccess { forwarded ->
+                onForwarded(forwarded)
+            }.onFailure { err ->
+                _uiState.update { it.copy(errorMessage = err.message ?: "Failed to forward message") }
+            }
+        }
+    }
+
+    fun toggleReaction(baseUrl: String, accessToken: String, messageId: Long, emoji: String) {
+        val service = apiService ?: return
+        viewModelScope.launch {
+            service.toggleReaction(baseUrl, accessToken, messageId, emoji)
+                .onSuccess { counts ->
+                    _uiState.update { state ->
+                        state.copy(
+                            messages = state.messages.map {
+                                if (it.serverId == messageId) it.copy(reactionCounts = counts) else it
+                            }
+                        )
+                    }
+                    persistCurrentMessages()
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(errorMessage = err.message ?: "Failed to react") }
+                }
+        }
+    }
+
     private fun handleServerEvent(event: ChatServerEvent) {
         val currentConversationId = _uiState.value.conversationId
         when (event) {
@@ -392,6 +524,64 @@ class ChatRoomViewModel(
                         )
                     }
                 }
+            }
+
+            is ChatServerEvent.Typing -> {
+                if (event.conversationId != currentConversationId || event.userId == activeCurrentUserId) return
+                val label = "User #${event.userId}"
+                typingExpiryJobs.remove(event.userId)?.cancel()
+                if (event.isTyping) {
+                    _uiState.update { state ->
+                        if (label in state.typingUserNames) state
+                        else state.copy(typingUserNames = state.typingUserNames + label)
+                    }
+                    typingExpiryJobs[event.userId] = viewModelScope.launch {
+                        delay(event.expiresInMs.coerceAtLeast(1_000L))
+                        _uiState.update { state ->
+                            state.copy(typingUserNames = state.typingUserNames - label)
+                        }
+                    }
+                } else {
+                    _uiState.update { state ->
+                        state.copy(typingUserNames = state.typingUserNames - label)
+                    }
+                }
+            }
+
+            is ChatServerEvent.MessageUpdated -> {
+                if (event.conversationId != currentConversationId) return
+                _uiState.update { state ->
+                    state.copy(
+                        messages = state.messages.map {
+                            if (it.serverId == event.messageId) it.copy(content = event.content, isEdited = true) else it
+                        }
+                    )
+                }
+                persistCurrentMessages()
+            }
+
+            is ChatServerEvent.MessageRecalled -> {
+                if (event.conversationId != currentConversationId) return
+                _uiState.update { state ->
+                    state.copy(
+                        messages = state.messages.map {
+                            if (it.serverId == event.messageId) it.copy(content = "", isRecalled = true) else it
+                        }
+                    )
+                }
+                persistCurrentMessages()
+            }
+
+            is ChatServerEvent.ReactionUpdated -> {
+                if (event.conversationId != currentConversationId) return
+                _uiState.update { state ->
+                    state.copy(
+                        messages = state.messages.map {
+                            if (it.serverId == event.messageId) it.copy(reactionCounts = event.counts) else it
+                        }
+                    )
+                }
+                persistCurrentMessages()
             }
 
             is ChatServerEvent.Error -> {

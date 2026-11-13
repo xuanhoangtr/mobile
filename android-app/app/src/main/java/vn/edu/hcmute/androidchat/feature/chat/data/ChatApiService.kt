@@ -80,6 +80,37 @@ interface ChatApiService {
         conversationId: Long,
         targetUserId: Long
     ): Result<Unit>
+
+    suspend fun editMessage(
+        baseUrl: String,
+        accessToken: String,
+        messageId: Long,
+        currentUserId: Long,
+        content: String
+    ): Result<MessageUiModel>
+
+    suspend fun recallMessage(
+        baseUrl: String,
+        accessToken: String,
+        messageId: Long,
+        currentUserId: Long
+    ): Result<MessageUiModel>
+
+    suspend fun forwardMessage(
+        baseUrl: String,
+        accessToken: String,
+        sourceMessageId: Long,
+        targetConversationId: Long,
+        clientMessageId: String,
+        currentUserId: Long
+    ): Result<MessageUiModel>
+
+    suspend fun toggleReaction(
+        baseUrl: String,
+        accessToken: String,
+        messageId: Long,
+        emoji: String
+    ): Result<Map<String, Int>>
 }
 
 object ChatRestParser {
@@ -142,6 +173,7 @@ object ChatRestParser {
         val deletedAt = obj.optString("deletedAt").takeIf { it.isNotBlank() && it != "null" }
         val editedAt = obj.optString("editedAt").takeIf { it.isNotBlank() && it != "null" }
         val replyToId = if (obj.has("replyToId") && !obj.isNull("replyToId")) obj.getLong("replyToId") else null
+        val forwardedFromId = if (obj.has("forwardedFromId") && !obj.isNull("forwardedFromId")) obj.getLong("forwardedFromId") else null
 
         return MessageUiModel(
             localId = clientMessageId,
@@ -155,6 +187,7 @@ object ChatRestParser {
             createdAt = obj.optString("createdAt", ""),
             deliveryStatus = MessageDeliveryStatus.DELIVERED,
             replyToId = replyToId,
+            forwardedFromId = forwardedFromId,
             isEdited = editedAt != null,
             isRecalled = deletedAt != null
         )
@@ -358,6 +391,91 @@ class OkHttpChatApiService(
                 .build()
             executeRequest(request)
             Unit
+        }
+    }
+
+    override suspend fun editMessage(
+        baseUrl: String,
+        accessToken: String,
+        messageId: Long,
+        currentUserId: Long,
+        content: String
+    ): Result<MessageUiModel> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanBase = baseUrl.trimEnd('/')
+            val payload = JSONObject().put("content", content).toString()
+            val request = Request.Builder()
+                .url("$cleanBase/messages/$messageId")
+                .header("Authorization", "Bearer $accessToken")
+                .patch(payload.toRequestBody(jsonMediaType))
+                .build()
+            ChatRestParser.parseMessageDto(JSONObject(executeRequest(request)), currentUserId)
+        }
+    }
+
+    override suspend fun recallMessage(
+        baseUrl: String,
+        accessToken: String,
+        messageId: Long,
+        currentUserId: Long
+    ): Result<MessageUiModel> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanBase = baseUrl.trimEnd('/')
+            val request = Request.Builder()
+                .url("$cleanBase/messages/$messageId/recall")
+                .header("Authorization", "Bearer $accessToken")
+                .post("{}".toRequestBody(jsonMediaType))
+                .build()
+            ChatRestParser.parseMessageDto(JSONObject(executeRequest(request)), currentUserId)
+        }
+    }
+
+    override suspend fun forwardMessage(
+        baseUrl: String,
+        accessToken: String,
+        sourceMessageId: Long,
+        targetConversationId: Long,
+        clientMessageId: String,
+        currentUserId: Long
+    ): Result<MessageUiModel> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanBase = baseUrl.trimEnd('/')
+            val payload = JSONObject()
+                .put("targetConversationId", targetConversationId)
+                .put("clientMessageId", clientMessageId)
+                .toString()
+            val request = Request.Builder()
+                .url("$cleanBase/messages/$sourceMessageId/forward")
+                .header("Authorization", "Bearer $accessToken")
+                .post(payload.toRequestBody(jsonMediaType))
+                .build()
+            ChatRestParser.parseMessageDto(JSONObject(executeRequest(request)), currentUserId)
+        }
+    }
+
+    override suspend fun toggleReaction(
+        baseUrl: String,
+        accessToken: String,
+        messageId: Long,
+        emoji: String
+    ): Result<Map<String, Int>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanBase = baseUrl.trimEnd('/')
+            val payload = JSONObject().put("emoji", emoji).toString()
+            val request = Request.Builder()
+                .url("$cleanBase/messages/$messageId/reactions")
+                .header("Authorization", "Bearer $accessToken")
+                .post(payload.toRequestBody(jsonMediaType))
+                .build()
+            val root = JSONObject(executeRequest(request))
+            val countsObj = root.optJSONObject("counts") ?: JSONObject()
+            buildMap {
+                val keys = countsObj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    put(k, countsObj.optInt(k, 0))
+                }
+            }
         }
     }
 

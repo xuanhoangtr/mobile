@@ -22,7 +22,10 @@ import vn.edu.hcmute.androidchat.backend.common.authenticatedUserId
 /**
  * REST routes for Conversation & Message history (module CHAT).
  */
-fun Route.registerChatRoutes(repository: ChatRepository) {
+fun Route.registerChatRoutes(
+    repository: ChatRepository,
+    sessions: ChatSessionRegistry? = null
+) {
     authenticate(AUTH_JWT_NAME) {
         get("/conversations") {
             val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
@@ -183,6 +186,112 @@ fun Route.registerChatRoutes(repository: ChatRepository) {
             )
 
             call.respond(HttpStatusCode.OK, page)
+        }
+
+        patch("/messages/{id}") {
+            val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
+                ?: return@patch call.respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", "Invalid authenticated principal")
+            val messageId = call.parameters["id"]?.toLongOrNull()?.takeIf { it > 0L }
+                ?: return@patch call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid message id")
+            val body = runCatching { call.receiveNullable<EditMessageRequest>() }.getOrNull()
+                ?: return@patch call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid request body")
+
+            when (val res = repository.editMessage(userId, messageId, body.content, Instant.now().toString())) {
+                is GroupOpResult.Ok -> {
+                    val updated = res.value
+                    sessions?.broadcastToUsers(
+                        userIds = repository.activeMemberIds(updated.conversationId),
+                        type = "message.updated",
+                        requestId = null,
+                        payload = MessageUpdatedPayload(
+                            conversationId = updated.conversationId,
+                            messageId = updated.id,
+                            content = updated.content,
+                            editedAt = updated.editedAt
+                        )
+                    )
+                    call.respond(HttpStatusCode.OK, updated)
+                }
+                is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
+            }
+        }
+
+        post("/messages/{id}/recall") {
+            val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
+                ?: return@post call.respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", "Invalid authenticated principal")
+            val messageId = call.parameters["id"]?.toLongOrNull()?.takeIf { it > 0L }
+                ?: return@post call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid message id")
+
+            when (val res = repository.recallMessage(userId, messageId, Instant.now().toString())) {
+                is GroupOpResult.Ok -> {
+                    val recalled = res.value
+                    sessions?.broadcastToUsers(
+                        userIds = repository.activeMemberIds(recalled.conversationId),
+                        type = "message.recalled",
+                        requestId = null,
+                        payload = MessageUpdatedPayload(
+                            conversationId = recalled.conversationId,
+                            messageId = recalled.id,
+                            content = recalled.content,
+                            deletedAt = recalled.deletedAt
+                        )
+                    )
+                    call.respond(HttpStatusCode.OK, recalled)
+                }
+                is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
+            }
+        }
+
+        post("/messages/{id}/forward") {
+            val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
+                ?: return@post call.respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", "Invalid authenticated principal")
+            val messageId = call.parameters["id"]?.toLongOrNull()?.takeIf { it > 0L }
+                ?: return@post call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid message id")
+            val body = runCatching { call.receiveNullable<ForwardMessageRequest>() }.getOrNull()
+                ?: return@post call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid request body")
+
+            when (val res = repository.forwardMessage(
+                userId = userId,
+                sourceMessageId = messageId,
+                targetConversationId = body.targetConversationId,
+                clientMessageId = body.clientMessageId,
+                nowIso = Instant.now().toString()
+            )) {
+                is GroupOpResult.Ok -> {
+                    val forwarded = res.value
+                    sessions?.broadcastToUsers(
+                        userIds = repository.activeMemberIds(forwarded.conversationId),
+                        type = "message.created",
+                        requestId = null,
+                        payload = forwarded
+                    )
+                    call.respond(HttpStatusCode.Created, forwarded)
+                }
+                is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
+            }
+        }
+
+        post("/messages/{id}/reactions") {
+            val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
+                ?: return@post call.respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", "Invalid authenticated principal")
+            val messageId = call.parameters["id"]?.toLongOrNull()?.takeIf { it > 0L }
+                ?: return@post call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid message id")
+            val body = runCatching { call.receiveNullable<ToggleReactionRequest>() }.getOrNull()
+                ?: return@post call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid request body")
+
+            when (val res = repository.toggleReaction(userId, messageId, body.emoji, Instant.now().toString())) {
+                is GroupOpResult.Ok -> {
+                    val payload = res.value
+                    sessions?.broadcastToUsers(
+                        userIds = repository.activeMemberIds(payload.conversationId),
+                        type = "message.reaction",
+                        requestId = null,
+                        payload = payload
+                    )
+                    call.respond(HttpStatusCode.OK, payload)
+                }
+                is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
+            }
         }
     }
 }
