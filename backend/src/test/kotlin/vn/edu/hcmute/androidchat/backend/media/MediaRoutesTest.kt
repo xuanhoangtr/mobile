@@ -229,9 +229,15 @@ class MediaRoutesTest {
         assertEquals(0L, Files.list(root).use { it.count() })
     }
 
-    @Test fun unverifiedConversationFieldsAreRejectedAndStagedBlobDeleted() = fixture { root, _ ->
-        assertEquals(HttpStatusCode.BadRequest, client.post("/media/upload") { bearerAuth(token()); setBody(body(extra = true)) }.status)
-        assertEquals(0L, Files.list(root).use { it.count() })
+    @Test fun conversationFieldIsStoredButDoesNotGrantAccessByItself() = fixture { root, _ ->
+        val response = client.post("/media/upload") { bearerAuth(token()); setBody(body(extra = true)) }
+        assertEquals(HttpStatusCode.Created, response.status)
+        val json = AppJson.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertEquals(101, json.getValue("conversationId").jsonPrimitive.int)
+        assertEquals("CONVERSATION_POLICY_REQUIRED", json.getValue("accessScope").jsonPrimitive.content)
+        val id = json.getValue("id").jsonPrimitive.long
+        assertEquals(HttpStatusCode.NotFound, client.get("/media/$id") { bearerAuth(token(8)) }.status)
+        assertEquals(1L, Files.list(root).use { it.count() })
     }
 
     @Test fun storageFailureUsesSanitizedSharedErrorEnvelope() = fixture(storage = { root ->

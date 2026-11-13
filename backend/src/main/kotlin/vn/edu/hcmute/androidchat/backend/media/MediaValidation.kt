@@ -7,7 +7,8 @@ import java.text.Normalizer
 object MediaValidation {
     private val extensions = mapOf(
         "image/png" to setOf("png"), "image/jpeg" to setOf("jpg", "jpeg"),
-        "video/mp4" to setOf("mp4"), "application/pdf" to setOf("pdf"), "text/plain" to setOf("txt")
+        "video/mp4" to setOf("mp4"), "audio/mp4" to setOf("m4a", "mp4"),
+        "audio/3gpp" to setOf("3gp"), "application/pdf" to setOf("pdf"), "text/plain" to setOf("txt")
     )
 
     fun fileName(raw: String?): String {
@@ -56,6 +57,10 @@ object MediaValidation {
                 "application/pdf" -> starts(37, 80, 68, 70, 45)
                 "video/mp4" -> prefix.size >= 12 && String(prefix, 4, 4, Charsets.US_ASCII) == "ftyp" &&
                     String(prefix, 8, 4, Charsets.US_ASCII) in setOf("isom", "iso2", "mp41", "mp42", "avc1", "M4V ")
+                "audio/mp4" -> prefix.size >= 12 && String(prefix, 4, 4, Charsets.US_ASCII) == "ftyp" &&
+                    String(prefix, 8, 4, Charsets.US_ASCII) in setOf("isom", "iso2", "mp41", "mp42", "M4A ")
+                "audio/3gpp" -> prefix.size >= 12 && String(prefix, 4, 4, Charsets.US_ASCII) == "ftyp" &&
+                    String(prefix, 8, 4, Charsets.US_ASCII) in setOf("3gp4", "3gp5", "3gp6")
                 else -> false
             }
             if (!valid) invalidMedia("File content does not match MIME type")

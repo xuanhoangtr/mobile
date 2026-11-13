@@ -173,6 +173,7 @@ fun Route.registerMediaRoutes(service: MediaService) {
                 val owner = call.principal<JWTPrincipal>()!!.authenticatedUserId()!!
                 if (!service.uploadSlots.tryAcquire()) throw MediaFailure(HttpStatusCode.TooManyRequests, "RATE_LIMITED", "Too many concurrent uploads")
                 var staged: Pair<StoredBlob, Pair<String, String>>? = null
+                var conversationId: Long? = null
                 var published = false
                 var requestBodyFullyRead = false
                 var requestBody: LimitedRequestBody? = null
@@ -199,6 +200,12 @@ fun Route.registerMediaRoutes(service: MediaService) {
                         var filePartSeen = false
                         while (true) {
                             val part = multipart.readPart() ?: break
+                            if (part is PartData.FormItem && part.name == "conversationId" && conversationId == null) {
+                                conversationId = part.value.toLongOrNull()?.takeIf { it > 0L }
+                                    ?: invalidMedia("A positive conversation ID is required")
+                                part.dispose()
+                                continue
+                            }
                             if (part !is PartData.FileItem || part.name != "file" || filePartSeen) {
                                 // Do not dispose an unconsumed part: Ktor's dispose drains synchronously.
                                 invalidMedia("Exactly one file part is supported; additional fields are not accepted")
@@ -219,7 +226,7 @@ fun Route.registerMediaRoutes(service: MediaService) {
                         throw failure
                     }
                     val uploaded = staged ?: invalidMedia("A file part is required")
-                    val metadata = service.publish(owner, uploaded)
+                    val metadata = service.publish(owner, uploaded, conversationId)
                     published = true
                     call.respond(HttpStatusCode.Created, metadata)
                 } finally {

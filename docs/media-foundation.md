@@ -1,4 +1,4 @@
-# MEDIA D01–D05 — foundation và đề xuất tích hợp
+# MEDIA D01–D10 — foundation và upload file cơ bản
 
 Owner module: Nguyễn Quang Huy. Base: `d52b2ba`, branch `feature/media-foundation`.
 
@@ -13,7 +13,12 @@ Không thay `docs/api-contract.md`, Message, schema CHAT/AUTH, WebSocket hay JWT
 | D02 | Đề xuất MediaObject/API/MIME/limits/ACL/storage, điểm chặn tích hợp | PARTIAL — chờ ba owner chốt |
 | D03 | SAF OpenDocument, metadata, image/video thumbnail, external file preview, URI access, StateFlow/ViewModel | DONE ở mức source/build/unit test; thiết bị NOT VERIFIED |
 | D04 | Ktor dev-only upload streaming + local storage/validation + owner-only metadata/download + tests | DONE ở mức local test host |
-| D05 | State progress/cancel/retry có test; client Ktor upload/download local có test | PARTIAL — chưa có Android HTTP/JWT adapter, root navigation và thiết bị thật |
+| D05 | State progress/cancel/retry có test; client Ktor upload/download local có test | DONE ở mức source/local test; thiết bị NOT VERIFIED |
+| D06 | Picker nhiều loại, thumbnail/preview và upload progress | DONE ở mức source/build/unit test |
+| D07 | Upload theo chat, MediaObject có conversation context và ID kiểm soát | DONE ở mức contract/dev storage; membership vẫn do CHAT cung cấp |
+| D08 | Ảnh attachment, thumbnail và retry upload | DONE ở mức MEDIA boundary; chưa nối root CHAT |
+| D09 | Video/audio/file upload, download và mở preview | DONE ở mức MIME/HTTP adapter/dev endpoint; thiết bị NOT VERIFIED |
+| D10 | Test và bàn giao `media-upload-download` | DONE ở mức local build/test; chưa push/PR |
 
 Không báo upload PASS thành ảnh đã tới máy người nhận. Android không giả dữ liệu upload thành công: service mặc định luôn báo INTEGRATION_BLOCKED.
 
@@ -27,7 +32,7 @@ Root navigation/MainActivity và CHAT giữ nguyên. D05 thêm `MediaDebugActivi
 
 | Nhu cầu | API/quyền |
 |---|---|
-| Chọn JPEG/PNG/MP4/PDF/TXT | ActivityResultContracts.OpenDocument, content URI; không READ/WRITE_EXTERNAL_STORAGE hoặc MANAGE_EXTERNAL_STORAGE |
+| Chọn JPEG/PNG/MP4/audio/PDF/TXT | ActivityResultContracts.OpenDocument, content URI; không READ/WRITE_EXTERNAL_STORAGE hoặc MANAGE_EXTERNAL_STORAGE |
 | Đọc metadata | ContentResolver + OpenableColumns; size có thể không biết |
 | URI read | Thử giữ persistable read grant; báo rõ persisted/temporary. Mất quyền/xóa/di chuyển file cần chọn lại |
 | Bỏ chọn/thay selection/ViewModel clear | Chỉ release grant do MediaSource instance này mới acquire, không release grant có sẵn của module khác |
@@ -35,7 +40,7 @@ Root navigation/MainActivity và CHAT giữ nguyên. D05 thêm `MediaDebugActivi
 | Preview video | Scaled frame Android API27+; API24–26 dùng external viewer; chưa playback trong app |
 | Preview PDF/TXT/video | ACTION_VIEW với read URI grant, xử lý thiếu app/quyền |
 | Camera/micro/location/notifications | Chưa yêu cầu; ngoài foundation này |
-| HTTP upload | Chưa thêm INTERNET/cleartext exception vì chưa tích hợp Android network adapter |
+| HTTP upload | `HttpMediaUploadService` dùng shared JWT, multipart và không follow redirect; host phải cấu hình endpoint/cleartext theo môi trường |
 
 State sống qua rotation nếu host lấy ViewModel từ ViewModelStore đúng cách. Không claim restore sau process death; chưa SavedStateHandle/persist selection/upload queue.
 Progress hiện đếm byte stream được adapter tiêu thụ, không phải server ACK hay socket delivery. Repository chỉ nhận success khi adapter đọc đến EOF, byte count khớp size đã biết (nếu có), response size khớp dữ liệu đọc và có byteSize dương. Unknown size dùng progress indeterminate và vẫn chặn quá 10 MiB khi đọc. Cancel cooperative, retry mở lại URI stream từ đầu.
@@ -82,7 +87,7 @@ Local storage mặc định `backend/storage/media-dev/` khi chạy Gradle từ 
 
 | API | Input | Thành công | Quyền |
 |---|---|---|---|
-| POST /media/upload | Bearer JWT; multipart đúng một part `file` có filename/Content-Type; không field khác | 201 MediaObject READY | owner lấy subject JWT; không nhận ownerId/userId/conversationId/mediaRef |
+| POST /media/upload | Bearer JWT; multipart `file` và conversationId dương tùy chọn | 201 MediaObject READY | owner lấy subject JWT; conversation membership do CHAT policy cung cấp |
 | GET /media/{id} | JWT + positive Long id | 200 MediaObject | owner-only |
 | GET /media/{id}/download | JWT + id | 200 bytes; attachment + nosniff + no-store | owner-only; user khác/ID lạ đều 404 |
 
@@ -111,7 +116,7 @@ Lỗi theo `ApiErrorResponse` chung: 400 VALIDATION_ERROR; 401 UNAUTHORIZED (JWT
 - 10 MiB/file; đếm byte thực tế từng buffer 8 KiB, không tin metadata client. Toàn HTTP request upload có giới hạn `maxBytes + 64 KiB` tính cả multipart headers, preamble, parts và epilogue; bridge streaming đếm cả request kể cả khi thiếu Content-Length. Boundary phải là ASCII hiển thị dài tối đa70 ký tự để closing-delimiter detector luôn có hiệu lực. Nếu vượt ngưỡng, route hủy body, không publish object và trả413.
 - Body phải có multipart closing boundary hợp lệ trước khi metadata được publish; EOF giữa part hoặc thiếu delimiter bị từ chối. Nhánh lỗi/hủy hủy source channel, không gọi `part.dispose()` để drain đồng bộ phần chưa tiêu thụ. Upload semaphore chỉ được trả sau khi request-body pump kết thúc. Cleanup file staging bị lỗi giữ reservation quota; lần khởi động tiếp theo tính lại quota từ file còn trên dev disk.
 - 100 MiB disk quota trong một storage instance, tính cả file tồn tại lúc khởi tạo; catalog tối đa1000 object; hai upload đồng thời; upload timeout60s. Đây là giá trị dev, không phải quota nhóm đã chốt.
-- Chỉ JPEG(.jpg/.jpeg), PNG, MP4, PDF, TXT UTF-8. Sai/thiếu MIME, extension khác MIME, signature không khớp hoặc tệp rỗng bị từ chối.
+- Chỉ JPEG(.jpg/.jpeg), PNG, MP4, M4A/3GP audio, PDF, TXT UTF-8. Sai/thiếu MIME, extension khác MIME, signature không khớp hoặc tệp rỗng bị từ chối.
 - JPEG/PNG/PDF/MP4 kiểm magic/brand; **không phải full codec/container decoder, antivirus, sandbox hoặc chứng minh file phát/mở được**. Text UTF-8 kiểm toàn stream và từ chối control chars ngoài CR/LF/TAB.
 - Filename NFC, tối đa180 ký tự, không slash/backslash/drive/control/path traversal. Storage key UUID nội bộ; NOFOLLOW_LINKS; user không chọn key/path.
 - File staging chỉ publish metadata sau khi đọc hết một multipart request có boundary đóng hợp lệ. Sai MIME, quá file/request size hoặc quota, extra part, cancel, timeout, body thiếu delimiter hoặc lỗi trước publish sẽ dọn staging. Nếu staging deletion thất bại, quota được giữ bảo thủ và orphan vẫn chiếm dung lượng; dev storage reconcile khi khởi động bằng cách quét file trên disk. Cancel sau publish có thể đã lưu object dù client không nhận response: chưa upload idempotency/reconciliation.
@@ -140,7 +145,7 @@ Lệnh chuẩn: `android-app/.\gradlew.bat assembleDebug testDebugUnitTest`; `ba
 MEDIA Android tests gồm state selection/access error, progress/reopen/size/cancel/retry, known/unknown-size partial reads, EOF, empty input, IOException và response size mismatch. Backend test host kiểm multipart, JWT, ACL, MIME, traversal, file/request size, quota và storage failure; test socket loopback chạy Ktor Netty thật cho chunked epilogue vượt cap, MIME reject trên part chưa hoàn thành, timeout, disconnect và slot/staging cleanup. Storage tests inject delete failure, kiểm disk bytes/quota/startup reconciliation và hai write đồng thời.
 Toàn bộ test dùng temporary storage và test JWT; không production. Test progress Android dùng service double, không phải HTTP adapter. **Chưa Android HTTP/JWT upload, chưa thiết bị thật, chưa PostgreSQL/CHAT e2e**. Netty loopback không chứng minh hành vi của reverse proxy/deployment production.
 
-Phần MEDIA foundation (source Android/backend, tests và tài liệu này) được xây dựng với hỗ trợ Codex trong phiên task MEDIA D01–D05. Người review/merge cần đọc, hiểu và giải thích code; không gán tác giả commit hay tạo lịch sử thay thành viên. Không sao chép module từ reference repositories.
+Phần MEDIA D01–D10 (source Android/backend, tests và tài liệu này) được xây dựng với hỗ trợ Codex. Người review/merge cần đọc, hiểu và giải thích code; không gán tác giả commit hay tạo lịch sử thay thành viên. Không sao chép module từ reference repositories.
 
 Nguồn API chính thức đã đối chiếu: [Android SAF](https://developer.android.com/training/data-storage/shared/documents-files), [Ktor multipart streaming](https://ktor.io/docs/server-requests.html), [Ktor test host](https://ktor.io/docs/server-testing.html).
 

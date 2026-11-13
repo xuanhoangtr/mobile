@@ -21,6 +21,12 @@ interface MediaUploadService {
      * The host injects the shared session/JWT; implementations must not invent user IDs or CHAT messages.
      */
     suspend fun upload(media: SelectedMedia, input: InputStream): UploadedMedia
+
+    suspend fun upload(
+        media: SelectedMedia,
+        input: InputStream,
+        conversationId: Long?
+    ): UploadedMedia = upload(media, input)
 }
 
 object UnconfiguredMediaUploadService : MediaUploadService {
@@ -31,6 +37,11 @@ object UnconfiguredMediaUploadService : MediaUploadService {
 interface MediaRepository {
     suspend fun select(uri: String): SelectedMedia
     suspend fun upload(media: SelectedMedia, onBytesSent: (Long) -> Unit): UploadedMedia
+    suspend fun upload(
+        media: SelectedMedia,
+        conversationId: Long?,
+        onBytesSent: (Long) -> Unit
+    ): UploadedMedia = upload(media, onBytesSent)
     fun release(media: SelectedMedia) {}
 }
 
@@ -48,10 +59,27 @@ class StreamMediaRepository(
     override fun release(media: SelectedMedia) = source.release(media)
 
     override suspend fun upload(media: SelectedMedia, onBytesSent: (Long) -> Unit): UploadedMedia = withContext(ioDispatcher) {
+        uploadInternal(media, null, onBytesSent)
+    }
+
+    override suspend fun upload(
+        media: SelectedMedia,
+        conversationId: Long?,
+        onBytesSent: (Long) -> Unit
+    ): UploadedMedia = withContext(ioDispatcher) {
+        require(conversationId == null || conversationId > 0L) { "conversationId must be positive" }
+        uploadInternal(media, conversationId, onBytesSent)
+    }
+
+    private suspend fun uploadInternal(
+        media: SelectedMedia,
+        conversationId: Long?,
+        onBytesSent: (Long) -> Unit
+    ): UploadedMedia {
         MediaSelectionPolicy.validate(media)
         val context = coroutineContext
         var consumed = 0L
-        source.open(media).use { original ->
+        return source.open(media).use { original ->
             val counted = object : FilterInputStream(original) {
                 private fun record(count: Int) {
                     context.ensureActive()
@@ -69,7 +97,7 @@ class StreamMediaRepository(
                 override fun close() = Unit // the repository owns and closes the underlying URI stream
             }
             onBytesSent(0)
-            val uploaded = service.upload(media, counted)
+            val uploaded = service.upload(media, counted, conversationId)
             if (consumed == 0L) throw MediaException(MediaError.EMPTY_FILE)
             if (media.byteSize != null && consumed != media.byteSize) {
                 throw MediaException(MediaError.UPLOAD_FAILED)

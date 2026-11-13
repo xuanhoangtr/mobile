@@ -26,7 +26,10 @@ class MediaException(val reason: MediaError) : Exception(reason.name)
 
 object MediaSelectionPolicy {
     const val MAX_BYTES = 10L * 1024 * 1024
-    val supportedTypes = setOf("image/jpeg", "image/png", "video/mp4", "application/pdf", "text/plain")
+    val supportedTypes = setOf(
+        "image/jpeg", "image/png", "video/mp4", "audio/mp4", "audio/3gpp",
+        "application/pdf", "text/plain"
+    )
 
     fun validate(media: SelectedMedia) {
         if (media.mimeType !in supportedTypes) throw MediaException(MediaError.UNSUPPORTED_TYPE)

@@ -49,14 +49,14 @@ class MediaViewModel(private val repository: MediaRepository) : ViewModel() {
         }
     }
 
-    fun upload() {
+    fun upload(conversationId: Long? = null) {
         val media = state.value.selected ?: return
         if (state.value.phase in setOf(MediaPhase.UPLOADING, MediaPhase.UPLOADED, MediaPhase.SELECTING)) return
         val current = ++generation
         state.update { it.copy(phase = MediaPhase.UPLOADING, bytesSent = 0, uploaded = null, error = null) }
         operation = viewModelScope.launch {
             try {
-                val uploaded = repository.upload(media) { bytes ->
+                val uploaded = repository.upload(media, conversationId) { bytes ->
                     state.update { if (current == generation && it.phase == MediaPhase.UPLOADING) it.copy(bytesSent = bytes) else it }
                 }
                 if (current == generation) state.update { it.copy(phase = MediaPhase.UPLOADED, uploaded = uploaded) }

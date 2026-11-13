@@ -3,17 +3,18 @@ package vn.edu.hcmute.androidchat.backend.media
 import io.ktor.http.HttpStatusCode
 import kotlinx.serialization.Serializable
 
-/** Provisional dev-only object. Deliberately has no client-supplied conversation or storage path. */
+/** Provisional dev object. Conversation membership remains a CHAT-owned policy. */
 @Serializable
 data class MediaObject(
     val id: Long,
     val ownerId: Long,
+    val conversationId: Long? = null,
     val fileName: String,
     val mimeType: String,
     val byteSize: Long,
     val uploadState: String = "READY",
     val createdAt: String,
-    val accessScope: String = "OWNER_ONLY_DEV"
+    val accessScope: String = if (conversationId == null) "OWNER_ONLY_DEV" else "CONVERSATION_POLICY_REQUIRED"
 )
 
 class MediaFailure(val status: HttpStatusCode, val code: String, override val message: String) :

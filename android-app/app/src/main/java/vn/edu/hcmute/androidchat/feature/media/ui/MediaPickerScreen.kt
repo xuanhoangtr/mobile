@@ -73,7 +73,7 @@ import vn.edu.hcmute.androidchat.feature.media.model.UploadedMedia
 import vn.edu.hcmute.androidchat.feature.media.viewmodel.MediaViewModel
 import vn.edu.hcmute.androidchat.ui.theme.AndroidChatTheme
 
-private enum class MediaPickerKind { PHOTO, VIDEO, DOCUMENT }
+private enum class MediaPickerKind { PHOTO, VIDEO, AUDIO, DOCUMENT }
 
 /** MEDIA entrypoint remains independently embeddable; chat navigation can host it later. */
 @Composable
@@ -99,6 +99,7 @@ fun MediaPickerScreen(viewModel: MediaViewModel, modifier: Modifier = Modifier) 
                     MediaPickerKind.VIDEO -> visualPicker.launch(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
                     )
+                    MediaPickerKind.AUDIO -> documentPicker.launch(arrayOf("audio/mp4", "audio/3gpp", "audio/*"))
                     MediaPickerKind.DOCUMENT -> documentPicker.launch(
                         arrayOf("application/pdf", "text/plain")
                     )
@@ -290,6 +291,13 @@ private fun EmptyPickerContent(
                 mark = "▶",
                 enabled = enabled,
                 onClick = { onChooseClick(MediaPickerKind.VIDEO) },
+                modifier = Modifier.weight(1f)
+            )
+            MediaKindTile(
+                label = "Audio",
+                mark = "♫",
+                enabled = enabled,
+                onClick = { onChooseClick(MediaPickerKind.AUDIO) },
                 modifier = Modifier.weight(1f)
             )
             MediaKindTile(
@@ -497,6 +505,7 @@ private fun MediaFileBadge(media: SelectedMedia, size: androidx.compose.ui.unit.
     val label = when {
         media.mimeType.startsWith("image/") -> "IMG"
         media.mimeType.startsWith("video/") -> "MP4"
+        media.mimeType.startsWith("audio/") -> "AUDIO"
         media.mimeType == "application/pdf" -> "PDF"
         else -> "TXT"
     }

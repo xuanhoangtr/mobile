@@ -10,7 +10,7 @@ import java.security.SecureRandom
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 
-/** In-memory dev catalog: READY means stored/validated, never attached to a conversation. */
+/** In-memory dev catalog: READY means stored/validated, not a CHAT message delivery receipt. */
 class MediaService(
     val storage: MediaStorage,
     val maxBytes: Long = 10L * 1024 * 1024,
@@ -36,12 +36,21 @@ class MediaService(
     }
 
     @Synchronized
-    fun publish(ownerId: Long, staged: Pair<StoredBlob, Pair<String, String>>): MediaObject {
+    fun publish(ownerId: Long, staged: Pair<StoredBlob, Pair<String, String>>, conversationId: Long? = null): MediaObject {
+        if (conversationId != null && conversationId <= 0L) invalidMedia("A positive conversation ID is required")
         if (entries.size >= maxObjects) throw MediaFailure(HttpStatusCode.ServiceUnavailable, "MEDIA_CAPACITY", "Development catalog capacity reached")
         var id: Long
         do { id = random.nextLong() and Long.MAX_VALUE } while (id == 0L || entries.containsKey(id))
         val (blob, fields) = staged
-        val metadata = MediaObject(id, ownerId, fields.first, fields.second, blob.size, createdAt = Instant.now().toString())
+        val metadata = MediaObject(
+            id = id,
+            ownerId = ownerId,
+            conversationId = conversationId,
+            fileName = fields.first,
+            mimeType = fields.second,
+            byteSize = blob.size,
+            createdAt = Instant.now().toString()
+        )
         entries[id] = Entry(metadata, blob)
         return metadata
     }
