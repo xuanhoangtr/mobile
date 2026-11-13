@@ -29,6 +29,11 @@ Không thay `docs/api-contract.md`, Message, schema CHAT/AUTH, WebSocket hay JWT
 | D18 | Đăng ký/hủy đăng ký push token | DONE ở mức authenticated provider-neutral API/unit test; chưa tích hợp FCM |
 | D19 | Sticker catalog, picker và attachment ổn định | DONE ở mức local catalog/unit test; CHAT wiring chờ owner CHAT |
 | D20 | Kiểm thử và bàn giao local | DONE local; chưa push/PR |
+| D21 | Vị trí tĩnh, quyền location, mở map và audio-call signaling POC | DONE ở mức source/unit test; chưa có WebRTC media |
+| D22 | Call 1–1 invite/answer/end, mute và UI cuộc gọi | DONE ở mức authenticated signaling/state/UI POC; chưa test hai thiết bị |
+| D23 | Chia sẻ vị trí + wallpaper conversation + video-call POC | DONE ở mức local state/UI; chưa có video transport |
+| D24 | Incoming/outgoing/decline và push incoming call boundary | PARTIAL — signaling states có; FCM incoming chưa tích hợp |
+| D25 | Màn hình call audio/video cơ bản và gate | PARTIAL — chưa thể gọi là WebRTC end-to-end |
 
 Không báo upload PASS thành ảnh đã tới máy người nhận. Android không giả dữ liệu upload thành công: service mặc định luôn báo INTEGRATION_BLOCKED.
 
@@ -166,6 +171,27 @@ Debug batch/sticker/push chỉ chứng minh state, validation và HTTP boundary.
 Android unit test, backend test và debug build đã chạy local; chưa kiểm thử
 picker, FCM, sticker/voice cross-device, tai nghe, waveform hoặc upload thật
 trên thiết bị.
+
+## MEDIA D21–D25
+
+Vị trí được chia sẻ dưới dạng attachment tĩnh gồm latitude/longitude và label
+tùy chọn. Android chỉ xin coarse/fine location khi người dùng bấm chia sẻ,
+đọc last-known location, không chạy live tracking; attachment có thể mở bằng
+`geo:` intent. CHAT vẫn chịu trách nhiệm tạo Message và quyền conversation.
+
+Wallpaper được lưu theo `conversationId` trong `SharedPreferences`, có lựa
+chọn mặc định và các màu nền nhẹ, không thay đổi nội dung tin nhắn. Call
+signaling dev dùng JWT với các endpoint `/calls/invite`, `/calls/answer`,
+`/calls/decline` và `/calls/end`; registry RAM kiểm tra caller/callee, trạng
+thái ringing/accepted/declined/ended và chỉ người tham gia được kết thúc.
+Membership/group policy và delivery notification vẫn phải do CHAT/AUTH/host
+chốt.
+
+Call UI có incoming/outgoing, accept/decline/end, mute microphone và bật/tắt
+camera. Đây chỉ là signaling/state POC: chưa thêm WebRTC SDK, ICE/STUN/TURN,
+audio/video tracks hoặc FCM incoming-call delivery. Vì vậy D21–D25 chưa được
+claim là gọi audio/video 1–1 end-to-end; cần provider và test hai thiết bị
+trước khi bật trong bản tích hợp.
 
 ## Contract production đề xuất — BLOCKED
 

@@ -157,13 +157,15 @@ private fun ApplicationCall.installMediaRequestBodyLimit(limit: Long, boundary: 
 fun Application.configureMediaFoundation(
     config: AppConfig,
     service: MediaService? = mediaFromEnv(config),
-    pushTokenRegistry: PushTokenRegistry = PushTokenRegistry()
+    pushTokenRegistry: PushTokenRegistry = PushTokenRegistry(),
+    callSessionRegistry: CallSessionRegistry = CallSessionRegistry()
 ) {
     if (service == null) return
     require(config.env in setOf("dev", "test")) { "Local media foundation is limited to dev/test" }
     routing {
         registerMediaRoutes(service)
         registerPushTokenRoutes(pushTokenRegistry)
+        registerCallRoutes(callSessionRegistry)
     }
 }
 
