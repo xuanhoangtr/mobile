@@ -70,6 +70,7 @@
     <string name="profile_title">Trang cá nhân</string>
     <string name="profile_display_name">Tên hiển thị</string>
     <string name="profile_bio">Tiểu sử</string>
+    <string name="profile_change_avatar">Đổi ảnh đại diện</string>
     <string name="profile_saved">Đã cập nhật hồ sơ.</string>
     <string name="profile_save">Lưu thay đổi</string>
     <string name="profile_logout">Đăng xuất</string>

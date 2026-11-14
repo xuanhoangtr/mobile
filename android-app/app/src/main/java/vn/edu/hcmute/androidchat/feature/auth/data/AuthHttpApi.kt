@@ -21,6 +21,14 @@ interface AuthHttpTransport {
         body: String? = null,
         bearerToken: String? = null
     ): AuthHttpResponse
+
+    suspend fun executeBytes(
+        method: String,
+        path: String,
+        body: ByteArray,
+        contentType: String,
+        bearerToken: String? = null
+    ): AuthHttpResponse = throw UnsupportedOperationException("Binary transport is not configured")
 }
 
 /** Small AUTH-only transport; the host supplies its environment-specific backend URL. */
@@ -47,15 +55,43 @@ class UrlConnectionAuthTransport(
         path: String,
         body: String?,
         bearerToken: String?
+    ): AuthHttpResponse = executeRaw(
+        method = method,
+        path = path,
+        body = body?.toByteArray(Charsets.UTF_8),
+        contentType = if (body != null) "application/json; charset=utf-8" else null,
+        bearerToken = bearerToken
+    )
+
+    override suspend fun executeBytes(
+        method: String,
+        path: String,
+        body: ByteArray,
+        contentType: String,
+        bearerToken: String?
+    ): AuthHttpResponse = executeRaw(
+        method = method,
+        path = path,
+        body = body,
+        contentType = contentType,
+        bearerToken = bearerToken
+    )
+
+    private suspend fun executeRaw(
+        method: String,
+        path: String,
+        body: ByteArray?,
+        contentType: String?,
+        bearerToken: String?
     ): AuthHttpResponse = withContext(Dispatchers.IO) {
         val connection = (URL(normalizedBaseUrl + path).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 10_000
-            readTimeout = 10_000
+            readTimeout = 15_000
             setRequestProperty("Accept", "application/json")
-            if (body != null) {
+            if (body != null && contentType != null) {
                 doOutput = true
-                setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                setRequestProperty("Content-Type", contentType)
             }
             bearerToken?.let { setRequestProperty("Authorization", "Bearer $it") }
         }
@@ -63,7 +99,7 @@ class UrlConnectionAuthTransport(
         try {
             body?.let { requestBody ->
                 connection.outputStream.use { output ->
-                    output.write(requestBody.toByteArray(Charsets.UTF_8))
+                    output.write(requestBody)
                 }
             }
             val status = connection.responseCode
@@ -137,6 +173,12 @@ class AuthHttpApi internal constructor(private val transport: AuthHttpTransport)
             bio?.let { put("bio", it) }
         }
         val response = transport.execute("PATCH", "/users/me", request.toString(), accessToken)
+        if (response.statusCode !in 200..299) throw AuthHttpException(response.statusCode)
+        return JSONObject(response.body).toUser()
+    }
+
+    suspend fun uploadAvatar(accessToken: String, imageBytes: ByteArray, contentType: String): User {
+        val response = transport.executeBytes("POST", "/users/me/avatar", imageBytes, contentType, accessToken)
         if (response.statusCode !in 200..299) throw AuthHttpException(response.statusCode)
         return JSONObject(response.body).toUser()
     }

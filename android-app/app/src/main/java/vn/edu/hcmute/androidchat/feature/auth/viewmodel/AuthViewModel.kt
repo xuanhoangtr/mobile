@@ -167,6 +167,30 @@ class AuthViewModel(
         }
     }
 
+    fun uploadAvatar(imageBytes: ByteArray, contentType: String) {
+        if (_uiState.value.isLoading || imageBytes.isEmpty()) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, errorMessage = null, validationError = null, profileSaved = false) }
+            try {
+                val updatedUser = repository.uploadAvatar(imageBytes, contentType)
+                _uiState.update { state ->
+                    val current = state.authenticatedUser ?: return@update state.copy(isLoading = false)
+                    state.copy(
+                        authenticatedUser = current.copy(user = updatedUser),
+                        profileDisplayName = updatedUser.displayName,
+                        profileBio = updatedUser.bio.orEmpty(),
+                        profileSaved = true,
+                        isLoading = false
+                    )
+                }
+            } catch (exception: CancellationException) {
+                throw exception
+            } catch (exception: Exception) {
+                _uiState.update { it.copy(isLoading = false, errorMessage = exception.toUiError()) }
+            }
+        }
+    }
+
     fun logout() {
         if (_uiState.value.isLoading) return
         viewModelScope.launch {

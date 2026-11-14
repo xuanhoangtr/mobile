@@ -12,6 +12,8 @@ interface AuthRepository {
     suspend fun currentUser(): User
     suspend fun restoreSession(): AuthResult? = null
     suspend fun updateProfile(displayName: String?, bio: String?): User
+    suspend fun uploadAvatar(imageBytes: ByteArray, contentType: String): User =
+        throw UnsupportedOperationException("Avatar upload is not supported")
 }
 
 class RemoteAuthRepository(
@@ -44,25 +46,28 @@ class RemoteAuthRepository(
         return AuthResult(user, sessionId)
     }
 
-    override suspend fun currentUser(): User {
+    override suspend fun currentUser(): User = withAuthorizedRetry { token ->
+        api.currentUser(token)
+    }
+
+    override suspend fun updateProfile(displayName: String?, bio: String?): User =
+        withAuthorizedRetry { token ->
+            api.updateProfile(token, displayName, bio)
+        }
+
+    override suspend fun uploadAvatar(imageBytes: ByteArray, contentType: String): User =
+        withAuthorizedRetry { token ->
+            api.uploadAvatar(token, imageBytes, contentType)
+        }
+
+    private suspend inline fun <T> withAuthorizedRetry(block: (String) -> T): T {
         val token = sessionManager.accessToken() ?: throw AuthHttpException(401)
         return try {
-            api.currentUser(token)
+            block(token)
         } catch (exception: AuthHttpException) {
             if (exception.statusCode != 401) throw exception
             val refreshedToken = sessionManager.refreshAfterUnauthorized() ?: throw AuthHttpException(401)
-            api.currentUser(refreshedToken)
-        }
-    }
-
-    override suspend fun updateProfile(displayName: String?, bio: String?): User {
-        var token = sessionManager.accessToken() ?: throw AuthHttpException(401)
-        return try {
-            api.updateProfile(token, displayName, bio)
-        } catch (exception: AuthHttpException) {
-            if (exception.statusCode != 401) throw exception
-            token = sessionManager.refreshAfterUnauthorized() ?: throw AuthHttpException(401)
-            api.updateProfile(token, displayName, bio)
+            block(refreshedToken)
         }
     }
 }

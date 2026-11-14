@@ -1,5 +1,8 @@
 package vn.edu.hcmute.androidchat.feature.settings.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -27,13 +30,21 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import vn.edu.hcmute.androidchat.R
+import vn.edu.hcmute.androidchat.feature.auth.ui.UserAvatar
+import vn.edu.hcmute.androidchat.feature.auth.ui.decodeScaledBitmapBytes
 import vn.edu.hcmute.androidchat.feature.auth.viewmodel.AuthUiState
 import vn.edu.hcmute.androidchat.feature.settings.model.AppLanguage
 import vn.edu.hcmute.androidchat.feature.settings.model.AppThemePreference
@@ -51,9 +62,33 @@ fun ProfileSettingsScreen(
     onThemePreferenceChanged: (AppThemePreference) -> Unit,
     languagePreference: AppLanguage,
     onLanguagePreferenceChanged: (AppLanguage) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    avatarBaseUrl: String = "",
+    onUploadAvatar: ((ByteArray, String) -> Unit)? = null
 ) {
     var confirmLogout by rememberSaveable { mutableStateOf(false) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val avatarPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri == null) {
+            android.util.Log.i("ProfileAvatar", "Avatar picker returned null URI")
+            return@rememberLauncherForActivityResult
+        }
+        val upload = onUploadAvatar ?: return@rememberLauncherForActivityResult
+        scope.launch {
+            val bytes = withContext(Dispatchers.IO) {
+                decodeScaledBitmapBytes(context.contentResolver, uri)
+            }
+            if (bytes != null && bytes.isNotEmpty()) {
+                android.util.Log.i("ProfileAvatar", "Uploading avatar (${bytes.size} bytes)")
+                upload(bytes, "image/jpeg")
+            } else {
+                android.util.Log.w("ProfileAvatar", "Decoded avatar bytes null or empty")
+            }
+        }
+    }
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {
@@ -72,8 +107,33 @@ fun ProfileSettingsScreen(
                 .padding(horizontal = 20.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.Top
         ) {
+            val currentUser = uiState.authenticatedUser?.user
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                UserAvatar(
+                    avatarUrl = currentUser?.avatarUrl,
+                    displayName = uiState.profileDisplayName.ifBlank { currentUser?.displayName.orEmpty() },
+                    baseUrl = avatarBaseUrl,
+                    size = 88.dp,
+                    modifier = if (onUploadAvatar != null && !uiState.isLoading) {
+                        Modifier.clickable { avatarPickerLauncher.launch("image/*") }
+                    } else {
+                        Modifier
+                    }
+                )
+                if (onUploadAvatar != null) {
+                    TextButton(
+                        onClick = { avatarPickerLauncher.launch("image/*") },
+                        enabled = !uiState.isLoading
+                    ) {
+                        Text(stringResource(R.string.profile_change_avatar))
+                    }
+                }
+            }
             Text(
-                text = uiState.authenticatedUser?.user?.email.orEmpty(),
+                text = currentUser?.email.orEmpty(),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

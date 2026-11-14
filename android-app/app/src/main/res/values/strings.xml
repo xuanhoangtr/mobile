@@ -70,6 +70,7 @@
     <string name="profile_title">My profile</string>
     <string name="profile_display_name">Display name</string>
     <string name="profile_bio">Bio</string>
+    <string name="profile_change_avatar">Change avatar</string>
     <string name="profile_saved">Profile updated.</string>
     <string name="profile_save">Save changes</string>
     <string name="profile_logout">Sign out</string>
