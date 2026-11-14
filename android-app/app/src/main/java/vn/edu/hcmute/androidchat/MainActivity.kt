@@ -1,54 +1,136 @@
 package vn.edu.hcmute.androidchat
 
-import android.os.Bundle
 import android.content.pm.PackageManager
+import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import kotlinx.coroutines.launch
+import vn.edu.hcmute.androidchat.feature.auth.AuthFeature
+import vn.edu.hcmute.androidchat.feature.auth.ui.AuthEntryScreen
+import vn.edu.hcmute.androidchat.feature.auth.viewmodel.AuthViewModel
+import vn.edu.hcmute.androidchat.feature.chat.data.OkHttpChatApiService
+import vn.edu.hcmute.androidchat.feature.chat.data.OkHttpChatWebSocketClient
+import vn.edu.hcmute.androidchat.feature.chat.data.SqliteChatLocalCache
+import vn.edu.hcmute.androidchat.feature.chat.model.ConversationType
+import vn.edu.hcmute.androidchat.feature.chat.model.WsConnectionState
 import vn.edu.hcmute.androidchat.feature.chat.ui.ChatListScreen
 import vn.edu.hcmute.androidchat.feature.chat.ui.ChatRoomScreen
 import vn.edu.hcmute.androidchat.feature.chat.viewmodel.ChatListViewModel
 import vn.edu.hcmute.androidchat.feature.chat.viewmodel.ChatRoomViewModel
-import vn.edu.hcmute.androidchat.feature.auth.AuthFeature
-import vn.edu.hcmute.androidchat.feature.auth.ui.AuthEntryScreen
-import vn.edu.hcmute.androidchat.feature.auth.viewmodel.AuthViewModel
 import vn.edu.hcmute.androidchat.feature.contacts.ui.ContactsSearchScreen
 import vn.edu.hcmute.androidchat.feature.contacts.viewmodel.ContactsViewModel
 import vn.edu.hcmute.androidchat.feature.groups.ui.CreateGroupScreen
 import vn.edu.hcmute.androidchat.feature.groups.viewmodel.CreateGroupViewModel
+import vn.edu.hcmute.androidchat.feature.media.data.AndroidMediaSource
+import vn.edu.hcmute.androidchat.feature.media.data.HttpMediaUploadService
+import vn.edu.hcmute.androidchat.feature.media.data.StreamMediaRepository
+import vn.edu.hcmute.androidchat.feature.media.ui.MediaPickerScreen
+import vn.edu.hcmute.androidchat.feature.media.viewmodel.MediaViewModel
 import vn.edu.hcmute.androidchat.feature.settings.data.AuthAppSettingsStore
 import vn.edu.hcmute.androidchat.feature.settings.model.AppLanguage
 import vn.edu.hcmute.androidchat.feature.settings.model.AppThemePreference
 import vn.edu.hcmute.androidchat.feature.settings.model.resolveDarkTheme
 import vn.edu.hcmute.androidchat.feature.settings.ui.ProfileSettingsScreen
 import vn.edu.hcmute.androidchat.ui.theme.AndroidChatTheme
+import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 private enum class SkeletonRoute {
     CHAT_LIST,
     CHAT_ROOM,
     CREATE_GROUP,
     CONTACTS,
-    PROFILE_SETTINGS
+    PROFILE_SETTINGS,
+    MEDIA_PICKER
 }
 
 class MainActivity : ComponentActivity() {
-    private val authFeature by lazy { AuthFeature(applicationContext, authApiBaseUrl()) }
+    private val backendBaseUrl by lazy { authApiBaseUrl().trimEnd('/') }
+    private val authFeature by lazy { AuthFeature(applicationContext, backendBaseUrl) }
     private val appSettingsStore by lazy { AuthAppSettingsStore(applicationContext) }
+
+    private val chatApiService by lazy { OkHttpChatApiService() }
+    private val chatTransport by lazy { OkHttpChatWebSocketClient() }
+    private val chatLocalCache by lazy { SqliteChatLocalCache(applicationContext) }
+
+    @Volatile
+    private var cachedAccessToken: String? = null
+
     private val authViewModel: AuthViewModel by viewModels { authFeature.viewModelFactory }
     private val contactsViewModel: ContactsViewModel by viewModels { authFeature.contactsViewModelFactory }
-    private val chatListViewModel: ChatListViewModel by viewModels()
-    private val chatRoomViewModel: ChatRoomViewModel by viewModels()
-    private val createGroupViewModel: CreateGroupViewModel by viewModels()
+    private val chatListViewModel: ChatListViewModel by viewModels {
+        object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                return ChatListViewModel(
+                    transport = chatTransport,
+                    apiService = chatApiService,
+                    localCache = chatLocalCache
+                ) as T
+            }
+        }
+    }
+    private val chatRoomViewModel: ChatRoomViewModel by viewModels {
+        object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                return ChatRoomViewModel(
+                    transport = chatTransport,
+                    apiService = chatApiService,
+                    localCache = chatLocalCache
+                ) as T
+            }
+        }
+    }
+    private val createGroupViewModel: CreateGroupViewModel by viewModels {
+        object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                return CreateGroupViewModel(apiService = chatApiService) as T
+            }
+        }
+    }
+    private val mediaViewModel: MediaViewModel by viewModels {
+        object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                val uploadService = HttpMediaUploadService(
+                    endpoint = URL("$backendBaseUrl/media/upload"),
+                    accessToken = { cachedAccessToken.orEmpty() }
+                )
+                val repository = StreamMediaRepository(
+                    source = AndroidMediaSource(applicationContext.contentResolver),
+                    service = uploadService
+                )
+                return MediaViewModel(repository) as T
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -70,6 +152,18 @@ class MainActivity : ComponentActivity() {
 
                 LaunchedEffect(authState.authenticatedUser?.sessionId) {
                     currentRoute = SkeletonRoute.CHAT_LIST
+                    val authenticated = authState.authenticatedUser
+                    if (authenticated == null) {
+                        cachedAccessToken = null
+                        chatTransport.disconnect()
+                    } else {
+                        val token = authFeature.tokenProvider.accessToken()
+                        cachedAccessToken = token
+                        if (!token.isNullOrBlank()) {
+                            chatTransport.connect(toWebSocketUrl(backendBaseUrl), token)
+                            chatListViewModel.loadConversations(backendBaseUrl, token)
+                        }
+                    }
                 }
 
                 if (authState.authenticatedUser == null) {
@@ -84,7 +178,9 @@ class MainActivity : ComponentActivity() {
                                 onConversationClick = { conversation ->
                                     chatRoomViewModel.openConversation(
                                         conversationId = conversation.id,
-                                        title = conversation.title
+                                        title = conversation.title,
+                                        isGroup = conversation.type == ConversationType.GROUP,
+                                        currentUserId = requireNotNull(authState.authenticatedUser).user.id
                                     )
                                     currentRoute = SkeletonRoute.CHAT_ROOM
                                 },
@@ -96,28 +192,61 @@ class MainActivity : ComponentActivity() {
 
                         SkeletonRoute.CHAT_ROOM -> {
                             val roomState by chatRoomViewModel.uiState.collectAsState()
+                            val currentUserId = requireNotNull(authState.authenticatedUser).user.id
+                            LaunchedEffect(roomState.conversationId, authState.authenticatedUser?.sessionId) {
+                                val token = authFeature.tokenProvider.accessToken()
+                                cachedAccessToken = token
+                                if (!token.isNullOrBlank() && roomState.conversationId > 0L) {
+                                    chatRoomViewModel.loadInitialHistory(
+                                        baseUrl = backendBaseUrl,
+                                        accessToken = token,
+                                        currentUserId = currentUserId
+                                    )
+                                }
+                            }
                             ChatRoomScreen(
                                 uiState = roomState,
                                 onBackClick = { currentRoute = SkeletonRoute.CHAT_LIST },
                                 onDraftChange = chatRoomViewModel::onDraftChanged,
                                 onSendClick = {
+                                    val nowLabel = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
                                     chatRoomViewModel.queueOutgoingTextMessage(
-                                        currentUserId = requireNotNull(authState.authenticatedUser).user.id,
-                                        createdAtLabel = "--:--",
-                                        isTransportConnected = false
+                                        currentUserId = currentUserId,
+                                        createdAtLabel = nowLabel,
+                                        isTransportConnected = roomState.connectionState == WsConnectionState.CONNECTED
                                     )
-                                }
+                                },
+                                onAttachMediaClick = { currentRoute = SkeletonRoute.MEDIA_PICKER }
                             )
                         }
 
                         SkeletonRoute.CREATE_GROUP -> {
                             val groupState by createGroupViewModel.uiState.collectAsState()
+                            val currentUserId = requireNotNull(authState.authenticatedUser).user.id
                             CreateGroupScreen(
                                 uiState = groupState,
                                 onBackClick = { currentRoute = SkeletonRoute.CHAT_LIST },
                                 onGroupNameChange = createGroupViewModel::onGroupNameChanged,
                                 onToggleMember = createGroupViewModel::toggleMemberSelection,
-                                onSubmitClick = { currentRoute = SkeletonRoute.CHAT_LIST }
+                                onSubmitClick = {
+                                    settingsScope.launch {
+                                        val token = authFeature.tokenProvider.accessToken() ?: return@launch
+                                        cachedAccessToken = token
+                                        createGroupViewModel.submitCreateGroup(
+                                            baseUrl = backendBaseUrl,
+                                            accessToken = token
+                                        ) { created ->
+                                            chatListViewModel.loadConversations(backendBaseUrl, token)
+                                            chatRoomViewModel.openConversation(
+                                                conversationId = created.id,
+                                                title = created.title,
+                                                isGroup = true,
+                                                currentUserId = currentUserId
+                                            )
+                                            currentRoute = SkeletonRoute.CHAT_ROOM
+                                        }
+                                    }
+                                }
                             )
                         }
 
@@ -142,10 +271,47 @@ class MainActivity : ComponentActivity() {
                                 settingsScope.launch { appSettingsStore.setLanguagePreference(preference) }
                             }
                         )
+
+                        SkeletonRoute.MEDIA_PICKER -> {
+                            Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    TextButton(onClick = { currentRoute = SkeletonRoute.CHAT_ROOM }) {
+                                        Text("← Quay lại phòng chat")
+                                    }
+                                }
+                                MediaPickerScreen(
+                                    viewModel = mediaViewModel,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (isFinishing) {
+            chatTransport.disconnect()
+        }
+    }
+
+    private fun toWebSocketUrl(httpBaseUrl: String): String {
+        val wsBase = when {
+            httpBaseUrl.startsWith("https://", ignoreCase = true) ->
+                "wss://" + httpBaseUrl.removePrefix("https://")
+            httpBaseUrl.startsWith("http://", ignoreCase = true) ->
+                "ws://" + httpBaseUrl.removePrefix("http://")
+            else -> httpBaseUrl
+        }
+        return "${wsBase.trimEnd('/')}/ws/chat"
     }
 
     private fun authApiBaseUrl(): String {

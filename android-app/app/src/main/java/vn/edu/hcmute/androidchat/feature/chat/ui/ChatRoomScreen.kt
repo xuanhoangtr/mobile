@@ -60,7 +60,8 @@ fun ChatRoomScreen(
     onBackClick: () -> Unit,
     onDraftChange: (String) -> Unit,
     onSendClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onAttachMediaClick: (() -> Unit)? = null
 ) {
     Scaffold(
         modifier = modifier
@@ -127,6 +128,16 @@ fun ChatRoomScreen(
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    if (onAttachMediaClick != null) {
+                        TextButton(onClick = onAttachMediaClick) {
+                            Text(
+                                text = "+",
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = ChatStitchTokens.BrandBlue
+                            )
+                        }
+                    }
                     OutlinedTextField(
                         value = uiState.draftText,
                         onValueChange = onDraftChange,
