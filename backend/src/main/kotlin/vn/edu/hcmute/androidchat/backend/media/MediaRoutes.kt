@@ -161,7 +161,6 @@ fun Application.configureMediaFoundation(
     callSessionRegistry: CallSessionRegistry = CallSessionRegistry()
 ) {
     if (service == null) return
-    require(config.env in setOf("dev", "test")) { "Local media foundation is limited to dev/test" }
     routing {
         registerMediaRoutes(service)
         registerPushTokenRoutes(pushTokenRegistry)
@@ -170,9 +169,11 @@ fun Application.configureMediaFoundation(
 }
 
 private fun mediaFromEnv(config: AppConfig): MediaService? {
-    if (System.getenv("MEDIA_DEV_ENABLED") != "true") return null
-    require(config.env in setOf("dev", "test")) { "MEDIA_DEV_ENABLED is only supported in dev/test" }
-    return MediaService(LocalMediaStorage(Path.of("storage", "media-dev")))
+    val enabled = System.getenv("MEDIA_ENABLED") == "true" ||
+        System.getenv("MEDIA_DEV_ENABLED") == "true"
+    if (!enabled) return null
+    val storageDir = System.getenv("MEDIA_STORAGE_DIR")?.takeIf { it.isNotBlank() } ?: "storage/media-dev"
+    return MediaService(LocalMediaStorage(Path.of(storageDir)))
 }
 
 fun Route.registerMediaRoutes(service: MediaService) {
