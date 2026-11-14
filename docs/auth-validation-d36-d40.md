@@ -46,7 +46,7 @@ This handoff covers only the AUTH contribution. The local Android and backend ve
 ## Git, disclosure, and submission limits
 
 - Worktree-local identity: `huydc7 <dinhconghuy101006@gmail.com>`; branch `feature/auth-email`. The seven preceding AUTH commits cited in the report are present in local history with that author. This turn used local Git only and did not inspect remote publication status.
-- The intended local commit scope is the README, AUTH report, slide deck, validation handoff, and dependency audit listed below. No application source, secret, key, token, or password is included. The local commit record will be added to `docs/contribution-log.md`; no remote was queried or changed.
+- Initial artifact commit `9450571` contains the README, AUTH report, slide deck, initial validation handoff, and dependency audit. It includes no application source, secret, key, token, or password. A follow-up local commit records `9450571` in `docs/contribution-log.md` and updates this handoff; no remote was queried or changed.
 - The direct dependency audit reads cached POM metadata only. Transitive dependencies, source `LICENSE`/`NOTICE` files, and full obligations/compatibility require a separate review.
 - Before group packaging, supply the group number and all three real MSSVs; merge the AUTH report/slides into the group artifacts; record device and dry-run evidence; create and reopen the ZIP with `.git`, source, APK, and screenshots; exclude `build/`, `node_modules/`, keystore files, and `keystore.properties`. Do not invent the rubric's group ZIP filename while the group number/MSSVs are missing.
 
@@ -55,8 +55,8 @@ This handoff covers only the AUTH contribution. The local Android and backend ve
 - **Task / Owner / Window:** AUTH D36–D40 — Đinh Công Huy — submission verification and preparation.
 - **Status:** PARTIAL.
 - **Sources checked:** `AGENTS.md`; `ke_hoach_40_ngay_android_chat_kotlin.md` §4; `docs/requirements/rubric_vn.pdf`; `docs/api-contract.md`; D31–D35 handoff; README; local source/test artifacts. Stitch: NOT VERIFIED.
-- **Files created or changed:** `README.md`; `docs/auth-validation-d36-d40.md`; `docs/auth-dependency-license-audit-d36-d40.md`; `docs/submission/auth-module-report-d36-d40.docx`; `docs/submission/presentation-auth-d36-d40-final-v2.pptx`. `docs/contribution-log.md` will be created after the artifact commit so it can record the real hash.
+- **Files created or changed:** `README.md`; `docs/auth-validation-d36-d40.md`; `docs/auth-dependency-license-audit-d36-d40.md`; `docs/submission/auth-module-report-d36-d40.docx`; `docs/submission/presentation-auth-d36-d40-final-v2.pptx`; `docs/contribution-log.md` (records the artifact commit locally).
 - **Android build/tests:** PASS — `testDebugUnitTest assembleDebug --rerun-tasks`; 52 app-wide tests across 8 suites. No device test.
 - **Backend tests:** PASS — `test --rerun-tasks`; 12 tests, all using in-memory repositories. README server startup smoke PASS; PostgreSQL route test NOT RUN.
-- **Git:** `feature/auth-email`; worktree author `huydc7 <dinhconghuy101006@gmail.com>`; the artifact commit is pending. After it exists, a follow-up local commit will record its hash in `docs/contribution-log.md`. No remote access or push.
+- **Git:** `feature/auth-email`; artifact commit `9450571`, authored as `huydc7 <dinhconghuy101006@gmail.com>`. A follow-up local commit records it in `docs/contribution-log.md`. No remote access or push.
 - **Remaining dependencies:** OTP provider/routes and login rate limiting; PostgreSQL/device/CI evidence; CHAT/MEDIA token integration and CHAT block enforcement; group report/deck/demo/ZIP; real group number and student IDs.
