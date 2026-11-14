@@ -3,6 +3,7 @@ package vn.edu.hcmute.androidchat.backend
 import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
 import io.ktor.client.request.bearerAuth
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.patch
 import io.ktor.client.request.post
@@ -19,6 +20,15 @@ import vn.edu.hcmute.androidchat.backend.auth.AuthRepository
 import vn.edu.hcmute.androidchat.backend.auth.AuthSession
 import vn.edu.hcmute.androidchat.backend.auth.AuthTokenResponse
 import vn.edu.hcmute.androidchat.backend.auth.AuthUser
+import vn.edu.hcmute.androidchat.backend.auth.CreateFriendRequestRequest
+import vn.edu.hcmute.androidchat.backend.auth.FriendRequestAction
+import vn.edu.hcmute.androidchat.backend.auth.FriendRequestRecord
+import vn.edu.hcmute.androidchat.backend.auth.FriendRequestStatus
+import vn.edu.hcmute.androidchat.backend.auth.FriendRequestView
+import vn.edu.hcmute.androidchat.backend.auth.FriendRequestsResponse
+import vn.edu.hcmute.androidchat.backend.auth.FriendsResponse
+import vn.edu.hcmute.androidchat.backend.auth.PhoneDiscoverySettings
+import vn.edu.hcmute.androidchat.backend.auth.UpdatePhoneDiscoveryRequest
 import vn.edu.hcmute.androidchat.backend.common.AppConfig
 import vn.edu.hcmute.androidchat.backend.common.AppJson
 import java.time.Instant
@@ -212,6 +222,172 @@ class AuthRoutesTest {
         assertTrue(nextResponse.bodyAsText().contains("Match Two"))
     }
 
+    @Test
+    fun phoneDiscoveryRequiresProviderVerifiedPhoneAndKeepsPhonePrivate() = testApplication {
+        val repository = InMemoryAuthRepository()
+        application { module(testConfig, repository) }
+        val owner = client.register("owner@example.com", "phone_owner", "Phone Owner")
+        val searcher = client.register("searcher@example.com", "phone_searcher", "Phone Searcher")
+
+        val initial = client.get("/users/me/phone-discovery") { bearerAuth(owner.accessToken) }
+        assertEquals(HttpStatusCode.OK, initial.status)
+        assertEquals(
+            PhoneDiscoverySettings(phoneVerified = false, discoverable = false),
+            AppJson.decodeFromString(initial.bodyAsText())
+        )
+
+        val cannotEnableUnverified = client.patch("/users/me/phone-discovery") {
+            bearerAuth(owner.accessToken)
+            contentType(ContentType.Application.Json)
+            setBody("""{"discoverable":true}""")
+        }
+        assertEquals(HttpStatusCode.Conflict, cannotEnableUnverified.status)
+
+        // Simulate trusted provider metadata in the test fixture; there is no public verify endpoint.
+        repository.setPhone(owner.user.id, "+84912345678", discoverable = false)
+        val enabled = client.patch("/users/me/phone-discovery") {
+            bearerAuth(owner.accessToken)
+            contentType(ContentType.Application.Json)
+            setBody("""{"discoverable":true}""")
+        }
+        assertEquals(HttpStatusCode.OK, enabled.status)
+        assertEquals(
+            PhoneDiscoverySettings(phoneVerified = true, discoverable = true),
+            AppJson.decodeFromString(enabled.bodyAsText())
+        )
+
+        val discovered = client.get("/users/by-phone?phone=%2B84912345678") {
+            bearerAuth(searcher.accessToken)
+        }
+        assertEquals(HttpStatusCode.OK, discovered.status)
+        assertFalse(discovered.bodyAsText().contains("owner@example.com"))
+        assertFalse(discovered.bodyAsText().contains("+84912345678"))
+
+        val cannotDisableWithoutBody = client.patch("/users/me/phone-discovery") {
+            bearerAuth(owner.accessToken)
+            contentType(ContentType.Application.Json)
+            setBody("{}")
+        }
+        assertEquals(HttpStatusCode.BadRequest, cannotDisableWithoutBody.status)
+
+        val unauthenticated = client.get("/users/me/phone-discovery")
+        assertEquals(HttpStatusCode.Unauthorized, unauthenticated.status)
+    }
+
+    @Test
+    fun friendRequestsEnforceOwnershipAndPersistAcceptedRelationships() = testApplication {
+        val repository = InMemoryAuthRepository()
+        application { module(testConfig, repository) }
+        val sender = client.register("sender@example.com", "friend_sender", "Sender")
+        val recipient = client.register("recipient@example.com", "friend_recipient", "Recipient")
+        val third = client.register("third@example.com", "friend_third", "Third")
+        val canceler = client.register("canceler@example.com", "friend_canceler", "Canceler")
+
+        val invalidDirection = client.get("/friend-requests?direction=sideways") {
+            bearerAuth(sender.accessToken)
+        }
+        assertEquals(HttpStatusCode.BadRequest, invalidDirection.status)
+
+        val selfRequest = client.post("/friend-requests") {
+            bearerAuth(sender.accessToken)
+            contentType(ContentType.Application.Json)
+            setBody("""{"targetUserId":${sender.user.id}}""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, selfRequest.status)
+
+        val createdResponse = client.post("/friend-requests") {
+            bearerAuth(sender.accessToken)
+            contentType(ContentType.Application.Json)
+            setBody("""{"targetUserId":${recipient.user.id}}""")
+        }
+        assertEquals(HttpStatusCode.Created, createdResponse.status)
+        val created = AppJson.decodeFromString<FriendRequestView>(createdResponse.bodyAsText())
+        assertTrue(created.id.toLong() > 0)
+        assertEquals(FriendRequestStatus.PENDING, created.status)
+        assertEquals(sender.user.id, created.sender.id)
+        assertEquals(recipient.user.id, created.recipient.id)
+        assertFalse(createdResponse.bodyAsText().contains("email"))
+        assertFalse(createdResponse.bodyAsText().contains("password"))
+
+        val duplicateReverse = client.post("/friend-requests") {
+            bearerAuth(recipient.accessToken)
+            contentType(ContentType.Application.Json)
+            setBody("""{"targetUserId":${sender.user.id}}""")
+        }
+        assertEquals(HttpStatusCode.Conflict, duplicateReverse.status)
+
+        val outgoing = client.get("/friend-requests?direction=outgoing") {
+            bearerAuth(sender.accessToken)
+        }
+        assertEquals(HttpStatusCode.OK, outgoing.status)
+        assertEquals(
+            listOf(FriendRequestStatus.PENDING),
+            AppJson.decodeFromString<FriendRequestsResponse>(outgoing.bodyAsText()).items.map { it.status }
+        )
+        val incoming = client.get("/friend-requests?direction=incoming") {
+            bearerAuth(recipient.accessToken)
+        }
+        assertEquals(HttpStatusCode.OK, incoming.status)
+        assertTrue(incoming.bodyAsText().contains(created.id))
+
+        val wrongOwner = client.post("/friend-requests/${created.id}/accept") {
+            bearerAuth(sender.accessToken)
+        }
+        assertEquals(HttpStatusCode.NotFound, wrongOwner.status)
+
+        val acceptedResponse = client.post("/friend-requests/${created.id}/accept") {
+            bearerAuth(recipient.accessToken)
+        }
+        assertEquals(HttpStatusCode.OK, acceptedResponse.status)
+        val accepted = AppJson.decodeFromString<FriendRequestView>(acceptedResponse.bodyAsText())
+        assertEquals(FriendRequestStatus.ACCEPTED, accepted.status)
+        assertTrue(accepted.respondedAt != null)
+
+        for ((owner, expectedFriend) in listOf(sender to "Recipient", recipient to "Sender")) {
+            val friendsResponse = client.get("/friends") { bearerAuth(owner.accessToken) }
+            assertEquals(HttpStatusCode.OK, friendsResponse.status)
+            val friends = AppJson.decodeFromString<FriendsResponse>(friendsResponse.bodyAsText())
+            assertEquals(listOf(expectedFriend), friends.items.map { it.displayName })
+            assertFalse(friendsResponse.bodyAsText().contains("email"))
+        }
+
+        val alreadyFriends = client.post("/friend-requests") {
+            bearerAuth(sender.accessToken)
+            contentType(ContentType.Application.Json)
+            setBody("""{"targetUserId":${recipient.user.id}}""")
+        }
+        assertEquals(HttpStatusCode.Conflict, alreadyFriends.status)
+
+        val rejectResponse = client.post("/friend-requests") {
+            bearerAuth(sender.accessToken)
+            contentType(ContentType.Application.Json)
+            setBody("""{"targetUserId":${third.user.id}}""")
+        }
+        val rejectedRequest = AppJson.decodeFromString<FriendRequestView>(rejectResponse.bodyAsText())
+        val rejected = client.post("/friend-requests/${rejectedRequest.id}/reject") {
+            bearerAuth(third.accessToken)
+        }
+        assertEquals(HttpStatusCode.OK, rejected.status)
+        assertEquals(FriendRequestStatus.REJECTED, AppJson.decodeFromString<FriendRequestView>(rejected.bodyAsText()).status)
+
+        val cancelResponse = client.post("/friend-requests") {
+            bearerAuth(canceler.accessToken)
+            contentType(ContentType.Application.Json)
+            setBody("""{"targetUserId":${sender.user.id}}""")
+        }
+        val cancelRequest = AppJson.decodeFromString<FriendRequestView>(cancelResponse.bodyAsText())
+        val canceled = client.delete("/friend-requests/${cancelRequest.id}") {
+            bearerAuth(canceler.accessToken)
+        }
+        assertEquals(HttpStatusCode.NoContent, canceled.status)
+        assertTrue(canceled.bodyAsText().isEmpty())
+        val finalIncoming = client.get("/friend-requests?direction=incoming") {
+            bearerAuth(sender.accessToken)
+        }
+        val canceledHistory = AppJson.decodeFromString<FriendRequestsResponse>(finalIncoming.bodyAsText())
+        assertEquals(FriendRequestStatus.CANCELED, canceledHistory.items.first().status)
+    }
+
     private suspend fun io.ktor.client.HttpClient.register(
         email: String,
         username: String,
@@ -229,7 +405,10 @@ class AuthRoutesTest {
 internal class InMemoryAuthRepository : AuthRepository {
     private val users = linkedMapOf<Long, AuthUser>()
     private val sessions = linkedMapOf<UUID, AuthSession>()
+    private val friendRequests = linkedMapOf<Long, FriendRequestRecord>()
+    private val friendships = mutableSetOf<Pair<Long, Long>>()
     private var nextUserId = 1L
+    private var nextFriendRequestId = 1L
     @Volatile
     var failSessionChecks = false
 
@@ -285,15 +464,99 @@ internal class InMemoryAuthRepository : AuthRepository {
 
     @Synchronized
     override fun findDiscoverableUserByPhone(phone: String) =
-        users.values.firstOrNull { it.normalizedPhone == phone && it.phoneDiscoverable }
+        users.values.firstOrNull {
+            it.normalizedPhone == phone && it.phoneVerifiedAt != null && it.phoneDiscoverable
+        }
 
     @Synchronized
-    fun setPhone(userId: Long, phone: String, discoverable: Boolean) {
+    override fun updatePhoneDiscovery(userId: Long, discoverable: Boolean, now: Instant): AuthUser? {
+        val user = users[userId] ?: return null
+        if (discoverable && (user.normalizedPhone == null || user.phoneVerifiedAt == null)) return null
+        return user.copy(phoneDiscoverable = discoverable, updatedAt = now).also { users[userId] = it }
+    }
+
+    @Synchronized
+    override fun areFriends(firstUserId: Long, secondUserId: Long) = friendPair(firstUserId, secondUserId) in friendships
+
+    @Synchronized
+    override fun createFriendRequest(senderUserId: Long, recipientUserId: Long, now: Instant): FriendRequestRecord {
+        if (areFriends(senderUserId, recipientUserId)) throw vn.edu.hcmute.androidchat.backend.auth.AlreadyFriendsException()
+        if (friendRequests.values.any {
+                it.status == vn.edu.hcmute.androidchat.backend.auth.FriendRequestStatus.PENDING &&
+                    friendPair(it.senderUserId, it.recipientUserId) == friendPair(senderUserId, recipientUserId)
+            }
+        ) {
+            throw vn.edu.hcmute.androidchat.backend.auth.PendingFriendRequestExistsException()
+        }
+        return FriendRequestRecord(
+            id = nextFriendRequestId++,
+            senderUserId = senderUserId,
+            recipientUserId = recipientUserId,
+            status = vn.edu.hcmute.androidchat.backend.auth.FriendRequestStatus.PENDING,
+            createdAt = now,
+            respondedAt = null
+        ).also { friendRequests[it.id] = it }
+    }
+
+    @Synchronized
+    override fun listFriendRequests(userId: Long, incoming: Boolean) = friendRequests.values
+        .filter { if (incoming) it.recipientUserId == userId else it.senderUserId == userId }
+        .sortedWith(compareByDescending<FriendRequestRecord> { it.createdAt }.thenByDescending { it.id })
+
+    @Synchronized
+    override fun transitionFriendRequest(
+        requestId: Long,
+        actorUserId: Long,
+        action: vn.edu.hcmute.androidchat.backend.auth.FriendRequestAction,
+        now: Instant
+    ): FriendRequestRecord? {
+        val current = friendRequests[requestId]
+            ?.takeIf { it.status == vn.edu.hcmute.androidchat.backend.auth.FriendRequestStatus.PENDING }
+            ?: return null
+        val allowedActor = when (action) {
+            vn.edu.hcmute.androidchat.backend.auth.FriendRequestAction.ACCEPT,
+            vn.edu.hcmute.androidchat.backend.auth.FriendRequestAction.REJECT -> current.recipientUserId
+            vn.edu.hcmute.androidchat.backend.auth.FriendRequestAction.CANCEL -> current.senderUserId
+        }
+        if (allowedActor != actorUserId) return null
+        val status = when (action) {
+            vn.edu.hcmute.androidchat.backend.auth.FriendRequestAction.ACCEPT ->
+                vn.edu.hcmute.androidchat.backend.auth.FriendRequestStatus.ACCEPTED
+            vn.edu.hcmute.androidchat.backend.auth.FriendRequestAction.REJECT ->
+                vn.edu.hcmute.androidchat.backend.auth.FriendRequestStatus.REJECTED
+            vn.edu.hcmute.androidchat.backend.auth.FriendRequestAction.CANCEL ->
+                vn.edu.hcmute.androidchat.backend.auth.FriendRequestStatus.CANCELED
+        }
+        return current.copy(status = status, respondedAt = now).also {
+            friendRequests[requestId] = it
+            if (action == vn.edu.hcmute.androidchat.backend.auth.FriendRequestAction.ACCEPT) {
+                friendships += friendPair(current.senderUserId, current.recipientUserId)
+            }
+        }
+    }
+
+    @Synchronized
+    override fun listFriends(userId: Long) = friendships.asSequence()
+        .filter { userId == it.first || userId == it.second }
+        .mapNotNull { pair -> users[if (userId == pair.first) pair.second else pair.first] }
+        .sortedWith(compareBy<AuthUser> { it.displayName }.thenBy { it.id })
+        .toList()
+
+    @Synchronized
+    fun setPhone(
+        userId: Long,
+        phone: String,
+        discoverable: Boolean,
+        phoneVerifiedAt: Instant? = Instant.now()
+    ) {
         users[userId] = requireNotNull(users[userId]).copy(
             normalizedPhone = phone,
+            phoneVerifiedAt = phoneVerifiedAt,
             phoneDiscoverable = discoverable
         )
     }
+
+    private fun friendPair(first: Long, second: Long) = minOf(first, second) to maxOf(first, second)
 
     @Synchronized
     override fun createSession(session: AuthSession) {

@@ -1,6 +1,7 @@
 package vn.edu.hcmute.androidchat.backend.auth
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.EncodeDefault
 import vn.edu.hcmute.androidchat.backend.common.CursorPage
 import java.time.Instant
 import java.util.Base64
@@ -14,12 +15,22 @@ internal data class AuthUser(
     val displayName: String,
     val passwordHash: String,
     val normalizedPhone: String? = null,
+    val phoneVerifiedAt: Instant? = null,
     val phoneDiscoverable: Boolean = false,
     val avatarUrl: String? = null,
     val bio: String? = null,
     val privacySettings: String = "{}",
     val createdAt: Instant,
     val updatedAt: Instant
+)
+
+internal data class FriendRequestRecord(
+    val id: Long,
+    val senderUserId: Long,
+    val recipientUserId: Long,
+    val status: FriendRequestStatus,
+    val createdAt: Instant,
+    val respondedAt: Instant?
 )
 
 internal data class AuthSession(
@@ -66,11 +77,49 @@ data class UpdateProfileRequest(
 )
 
 @Serializable
+data class UpdatePhoneDiscoveryRequest(val discoverable: Boolean? = null)
+
+@Serializable
+data class PhoneDiscoverySettings(
+    val phoneVerified: Boolean,
+    val discoverable: Boolean
+)
+
+@Serializable
+data class CreateFriendRequestRequest(val targetUserId: Long? = null)
+
+@Serializable
+enum class FriendRequestStatus {
+    PENDING,
+    ACCEPTED,
+    REJECTED,
+    CANCELED
+}
+
+@Serializable
+data class FriendRequestView(
+    val id: String,
+    val sender: PublicUser,
+    val recipient: PublicUser,
+    val status: FriendRequestStatus,
+    val createdAt: String,
+    val respondedAt: String?
+)
+
+@Serializable
+data class FriendRequestsResponse(val items: List<FriendRequestView>)
+
+@Serializable
+data class FriendsResponse(val items: List<PublicUser>)
+
+@Serializable
 data class PublicUser(
     val id: Long,
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
     val email: String? = null,
     val username: String,
     val displayName: String,
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
     val normalizedPhone: String? = null,
     val avatarUrl: String? = null,
     val bio: String? = null

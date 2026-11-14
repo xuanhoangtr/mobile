@@ -12,6 +12,7 @@ import io.ktor.server.routing.Routing
 import io.ktor.server.routing.get
 import io.ktor.server.routing.patch
 import io.ktor.server.routing.post
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -102,6 +103,68 @@ private fun Routing.registerUserRoutes(authService: AuthService) {
                 authService.findByPhone(phone).toPublicUser()
             }
         }
+
+        get("/users/me/phone-discovery") {
+            val identity = call.authenticatedIdentityOrRespond() ?: return@get
+            call.respondAuthResult(HttpStatusCode.OK) {
+                authService.phoneDiscoverySettings(identity.userId)
+            }
+        }
+
+        patch("/users/me/phone-discovery") {
+            val request = call.receiveBodyOrRespondError<UpdatePhoneDiscoveryRequest>() ?: return@patch
+            val identity = call.authenticatedIdentityOrRespond() ?: return@patch
+            call.respondAuthResult(HttpStatusCode.OK) {
+                authService.updatePhoneDiscovery(identity.userId, request)
+            }
+        }
+
+        post("/friend-requests") {
+            val request = call.receiveBodyOrRespondError<CreateFriendRequestRequest>() ?: return@post
+            val identity = call.authenticatedIdentityOrRespond() ?: return@post
+            call.respondAuthResult(HttpStatusCode.Created) {
+                authService.createFriendRequest(identity.userId, request)
+            }
+        }
+
+        get("/friend-requests") {
+            val identity = call.authenticatedIdentityOrRespond() ?: return@get
+            val direction = call.request.queryParameters["direction"].orEmpty()
+            call.respondAuthResult(HttpStatusCode.OK) {
+                authService.listFriendRequests(identity.userId, direction)
+            }
+        }
+
+        post("/friend-requests/{id}/accept") {
+            val identity = call.authenticatedIdentityOrRespond() ?: return@post
+            val requestId = call.friendRequestIdOrRespond() ?: return@post
+            call.respondAuthResult(HttpStatusCode.OK) {
+                authService.acceptFriendRequest(requestId, identity.userId)
+            }
+        }
+
+        post("/friend-requests/{id}/reject") {
+            val identity = call.authenticatedIdentityOrRespond() ?: return@post
+            val requestId = call.friendRequestIdOrRespond() ?: return@post
+            call.respondAuthResult(HttpStatusCode.OK) {
+                authService.rejectFriendRequest(requestId, identity.userId)
+            }
+        }
+
+        delete("/friend-requests/{id}") {
+            val identity = call.authenticatedIdentityOrRespond() ?: return@delete
+            val requestId = call.friendRequestIdOrRespond() ?: return@delete
+            call.respondAuthNoContent {
+                authService.cancelFriendRequest(requestId, identity.userId)
+            }
+        }
+
+        get("/friends") {
+            val identity = call.authenticatedIdentityOrRespond() ?: return@get
+            call.respondAuthResult(HttpStatusCode.OK) {
+                authService.listFriends(identity.userId)
+            }
+        }
     }
 }
 
@@ -128,6 +191,12 @@ private suspend inline fun <reified T : Any> ApplicationCall.receiveBodyOrRespon
     null
 }
 
+private suspend fun ApplicationCall.friendRequestIdOrRespond(): Long? =
+    parameters["id"]?.toLongOrNull()?.takeIf { it > 0L } ?: run {
+        respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Friend request id must be a positive integer")
+        null
+    }
+
 private suspend inline fun <reified T : Any> ApplicationCall.respondAuthResult(
     successStatus: HttpStatusCode,
     crossinline action: suspend () -> T
@@ -144,6 +213,29 @@ private suspend inline fun <reified T : Any> ApplicationCall.respondAuthResult(
         respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", exception.message ?: "Refresh token is invalid")
     } catch (_: UserNotFoundException) {
         respondError(HttpStatusCode.NotFound, "NOT_FOUND", "User was not found")
+    } catch (_: FriendRequestNotFoundException) {
+        respondError(HttpStatusCode.NotFound, "NOT_FOUND", "Friend request was not found")
+    } catch (_: AlreadyFriendsException) {
+        respondError(HttpStatusCode.Conflict, "CONFLICT", "Users are already friends")
+    } catch (_: PendingFriendRequestExistsException) {
+        respondError(HttpStatusCode.Conflict, "CONFLICT", "A friend request is already pending between these users")
+    } catch (_: DatabaseUnavailableException) {
+        respondError(HttpStatusCode.ServiceUnavailable, "SERVICE_UNAVAILABLE", "Authentication storage is unavailable")
+    } catch (_: SQLException) {
+        respondError(HttpStatusCode.ServiceUnavailable, "SERVICE_UNAVAILABLE", "Authentication storage is unavailable")
+    }
+}
+
+private suspend inline fun ApplicationCall.respondAuthNoContent(crossinline action: suspend () -> Unit) {
+    try {
+        withContext(Dispatchers.IO) { action() }
+        respond(HttpStatusCode.NoContent)
+    } catch (exception: AuthValidationException) {
+        respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", exception.message ?: "Request is invalid")
+    } catch (exception: AuthConflictException) {
+        respondError(HttpStatusCode.Conflict, "CONFLICT", exception.message ?: "Request conflicts with existing data")
+    } catch (_: FriendRequestNotFoundException) {
+        respondError(HttpStatusCode.NotFound, "NOT_FOUND", "Friend request was not found")
     } catch (_: DatabaseUnavailableException) {
         respondError(HttpStatusCode.ServiceUnavailable, "SERVICE_UNAVAILABLE", "Authentication storage is unavailable")
     } catch (_: SQLException) {

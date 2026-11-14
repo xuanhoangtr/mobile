@@ -106,9 +106,9 @@
 - `pinned_messages`: `(conversation_id, message_id, pinned_by, pinned_at)`, `PRIMARY KEY (conversation_id, message_id)`.
 
 ### 2.2. Thực thể liên module (AUTH proposal v0.2 — chờ AUTH/CHAT/MEDIA review)
-- **AUTH (Đinh Công Huy) — `User`:** `id`, normalized unique `email`, unique lowercase `username`, `displayName`, server-only `passwordHash`, nullable E.164 `normalizedPhone`, `phoneDiscoverable`, `avatarUrl`, `bio`, `privacySettings`, `status`, `createdAt`, `updatedAt`. Never return `passwordHash`; only return a phone number on `/users/me`, and never expose it from general search.
+- **AUTH (Đinh Công Huy) — `User`:** `id`, normalized unique `email`, unique lowercase `username`, `displayName`, server-only `passwordHash`, nullable E.164 `normalizedPhone`, nullable provider-owned `phoneVerifiedAt`, `phoneDiscoverable`, `avatarUrl`, `bio`, `privacySettings`, `status`, `createdAt`, `updatedAt`. Never return `passwordHash`; only return a phone number on `/users/me`, and never expose it from general search. A client cannot set verification metadata.
 - **AUTH — `Session`:** UUID `id`, `userId`, server-only SHA-256 `refreshTokenHash`, `createdAt`, `accessTokenExpiresAt`, `refreshTokenExpiresAt`, nullable `rotatedAt`, `lastUsedAt`, `revokedAt` and `revokedReason`, `deviceName`, `clientPlatform`. Clear the refresh hash on revoke. Keep one active refresh token per session and rotate it atomically on refresh.
-- **AUTH — `FriendRequest` / `ContactRelation`, `UserBlock`:** planned domain entities; not part of the auth-foundation migration.
+- **AUTH — `FriendRequest` / `ContactRelation`:** `FriendRequest` has string API `id`, sender/recipient public profiles, status (`PENDING`, `ACCEPTED`, `REJECTED`, `CANCELED`), creation time and nullable response time. Accepted requests also create a canonical ordered user-pair row in `friend_relationships`. `UserBlock` remains planned and is not part of V003.
 - **MEDIA (Nguyễn Quang Huy):** `MediaObject` (`id`, `ownerId`, `conversationId`, `mimeType`, `byteSize`, `storageKey`, `uploadState`), `CallSession`, `DeviceToken` / `NotificationPreference`.
 
 ---
@@ -182,6 +182,23 @@ All times are UTC ISO-8601. Private routes require a valid access JWT and an act
 | `PATCH /users/me` | `{ "displayName?", "bio?" }` → `PublicUser` | Authenticated. At least one field is required; display name 1–80 chars, bio up to 160 chars. Send `bio: ""` to clear it. |
 | `GET /users/search?q=...&cursor=...&limit=30` | → `CursorPage<PublicUser>` | Authenticated. Search display name/username only; query 2–80 chars; limit 1–100; excludes caller. Cursor is opaque URL-safe Base64 of the last returned numeric id. No email or phone in results. |
 | `GET /users/by-phone?phone=+...` | → `PublicUser` | Authenticated. Normalize visual spaces/parentheses/dashes and require E.164. Return the same `404 NOT_FOUND` for an absent or non-discoverable account. |
+
+#### Phone discovery and friends (AUTH proposal for D11–D14 — pending group review)
+
+These routes are authenticated and always derive the acting user from the validated JWT `sub`/`sid`; caller-supplied owner IDs are not accepted. `phoneVerifiedAt` is written only by a trusted provider integration. No phone verification route is available until the group selects an OTP provider. Phone-number enrollment remains blocked pending that provider decision; enabling discovery is rejected unless the account has both a phone number and provider-backed verification metadata. Discovery is opt-in and phone numbers are never included in search, friend-request, or friends responses.
+
+| Method & Path | Request / response | Access and behavior |
+|---|---|---|
+| `GET /users/me/phone-discovery` | → `{ "phoneVerified": boolean, "discoverable": boolean }` | Authenticated; returns only the caller's verification state and discovery preference. |
+| `PATCH /users/me/phone-discovery` | `{ "discoverable": boolean }` → same settings object | Authenticated; only the caller's preference changes. Enabling requires `normalizedPhone` and non-null `phoneVerifiedAt`; otherwise return `409 CONFLICT`. Disabling is always allowed. |
+| `POST /friend-requests` | `{ "targetUserId": number }` → `FriendRequest` (`201`) | Authenticated. Reject self-target, missing users, existing friendship, or any pending request for the same unordered pair. A pending reverse-direction request must be accepted by its recipient instead. |
+| `GET /friend-requests?direction=incoming\|outgoing` | → `{ "items": [FriendRequest] }` | Authenticated; lists requests addressed to or created by the caller. The nested profiles use `PublicUser` without email or phone. |
+| `POST /friend-requests/{id}/accept` | → updated `FriendRequest` | Authenticated recipient only. In one transaction, mark the request accepted and persist the canonical friendship. Wrong owner, unknown ID, or non-pending request returns `404 NOT_FOUND`. |
+| `POST /friend-requests/{id}/reject` | → updated `FriendRequest` | Authenticated recipient only; sets `REJECTED` and `respondedAt`. |
+| `DELETE /friend-requests/{id}` | → `204 No Content` | Authenticated sender only; cancels a pending request (`CANCELED`). |
+| `GET /friends` | → `{ "items": [PublicUser] }` | Authenticated; returns accepted friends only, without email or phone. |
+
+`FriendRequest` is `{ "id": string, "sender": PublicUser, "recipient": PublicUser, "status": "PENDING" | "ACCEPTED" | "REJECTED" | "CANCELED", "createdAt": ISO-8601, "respondedAt": ISO-8601 | null }`. Public request IDs are decimal strings so clients do not lose 64-bit precision. Invalid bodies/directions return `400 VALIDATION_ERROR`; duplicate or already-friends requests return `409 CONFLICT`. Request ownership is enforced in SQL predicates; friend acceptance stores both state changes atomically. `V003__auth_phone_discovery_and_friends.sql` follows V001/V002 without editing either earlier migration.
 
 `AuthTokenResponse` contains `user`, `sessionId`, `accessToken`, `accessTokenExpiresAt`, `refreshToken`, `refreshTokenExpiresAt`, and `tokenType: "Bearer"`. Passwords, access tokens and refresh tokens are never persisted in Android preferences as plaintext. Validation errors use `400 VALIDATION_ERROR`; duplicate accounts use `409 CONFLICT`; unavailable PostgreSQL uses `503 SERVICE_UNAVAILABLE`.
 

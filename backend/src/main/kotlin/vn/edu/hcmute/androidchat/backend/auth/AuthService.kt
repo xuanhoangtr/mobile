@@ -125,6 +125,100 @@ internal class AuthService(
         return repository.findDiscoverableUserByPhone(normalizedPhone) ?: throw UserNotFoundException()
     }
 
+    fun phoneDiscoverySettings(userId: Long): PhoneDiscoverySettings {
+        val user = repository.findUserById(userId) ?: throw UserNotFoundException()
+        return PhoneDiscoverySettings(
+            phoneVerified = user.phoneVerifiedAt != null,
+            discoverable = user.phoneDiscoverable
+        )
+    }
+
+    fun updatePhoneDiscovery(userId: Long, request: UpdatePhoneDiscoveryRequest): PhoneDiscoverySettings {
+        val discoverable = request.discoverable
+            ?: throw AuthValidationException("discoverable must be provided")
+        val current = repository.findUserById(userId) ?: throw UserNotFoundException()
+        if (discoverable && (current.normalizedPhone == null || current.phoneVerifiedAt == null)) {
+            throw AuthConflictException("A verified phone number is required to enable discovery")
+        }
+        val updated = repository.updatePhoneDiscovery(userId, discoverable, clock.instant())
+            ?: throw AuthConflictException("A verified phone number is required to enable discovery")
+        return PhoneDiscoverySettings(
+            phoneVerified = updated.phoneVerifiedAt != null,
+            discoverable = updated.phoneDiscoverable
+        )
+    }
+
+    fun createFriendRequest(senderUserId: Long, request: CreateFriendRequestRequest): FriendRequestView {
+        val recipientUserId = request.targetUserId
+            ?: throw AuthValidationException("targetUserId must be provided")
+        if (recipientUserId <= 0L) throw AuthValidationException("targetUserId must be positive")
+        if (recipientUserId == senderUserId) throw AuthValidationException("Users cannot send friend requests to themselves")
+        val recipient = repository.findUserById(recipientUserId) ?: throw UserNotFoundException()
+
+        val created = try {
+            repository.createFriendRequest(senderUserId, recipient.id, clock.instant())
+        } catch (_: AlreadyFriendsException) {
+            throw AuthConflictException("Users are already friends")
+        } catch (_: PendingFriendRequestExistsException) {
+            throw AuthConflictException("A friend request is already pending between these users")
+        } catch (exception: SQLException) {
+            if (exception.sqlState == "23505") {
+                throw AuthConflictException("A friend request is already pending between these users")
+            }
+            throw exception
+        }
+        return friendRequestView(created)
+    }
+
+    fun listFriendRequests(userId: Long, direction: String): FriendRequestsResponse {
+        val incoming = when (direction) {
+            "incoming" -> true
+            "outgoing" -> false
+            else -> throw AuthValidationException("direction must be incoming or outgoing")
+        }
+        return FriendRequestsResponse(
+            items = repository.listFriendRequests(userId, incoming).map(::friendRequestView)
+        )
+    }
+
+    fun acceptFriendRequest(requestId: Long, recipientUserId: Long): FriendRequestView =
+        transitionFriendRequest(requestId, recipientUserId, FriendRequestAction.ACCEPT)
+
+    fun rejectFriendRequest(requestId: Long, recipientUserId: Long): FriendRequestView =
+        transitionFriendRequest(requestId, recipientUserId, FriendRequestAction.REJECT)
+
+    fun cancelFriendRequest(requestId: Long, senderUserId: Long) {
+        transitionFriendRequest(requestId, senderUserId, FriendRequestAction.CANCEL)
+    }
+
+    fun listFriends(userId: Long): FriendsResponse = FriendsResponse(
+        items = repository.listFriends(userId).map { it.toPublicUser() }
+    )
+
+    private fun transitionFriendRequest(
+        requestId: Long,
+        actorUserId: Long,
+        action: FriendRequestAction
+    ): FriendRequestView {
+        if (requestId <= 0L) throw AuthValidationException("Friend request id must be positive")
+        val updated = repository.transitionFriendRequest(requestId, actorUserId, action, clock.instant())
+            ?: throw FriendRequestNotFoundException()
+        return friendRequestView(updated)
+    }
+
+    private fun friendRequestView(request: FriendRequestRecord): FriendRequestView {
+        val sender = repository.findUserById(request.senderUserId) ?: throw FriendRequestNotFoundException()
+        val recipient = repository.findUserById(request.recipientUserId) ?: throw FriendRequestNotFoundException()
+        return FriendRequestView(
+            id = request.id.toString(),
+            sender = sender.toPublicUser(),
+            recipient = recipient.toPublicUser(),
+            status = request.status,
+            createdAt = request.createdAt.toString(),
+            respondedAt = request.respondedAt?.toString()
+        )
+    }
+
     suspend fun isSessionActive(sessionId: UUID, userId: Long): Boolean = withContext(Dispatchers.IO) {
         repository.findActiveSession(sessionId, userId, clock.instant()) != null
     }

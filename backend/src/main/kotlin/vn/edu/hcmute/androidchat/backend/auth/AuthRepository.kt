@@ -13,6 +13,17 @@ internal interface AuthRepository {
     fun updateProfile(userId: Long, displayName: String?, bio: String?, now: Instant): AuthUser?
     fun searchUsers(query: String, afterId: Long?, excludeUserId: Long, limit: Int): List<AuthUser>
     fun findDiscoverableUserByPhone(phone: String): AuthUser?
+    fun updatePhoneDiscovery(userId: Long, discoverable: Boolean, now: Instant): AuthUser?
+    fun areFriends(firstUserId: Long, secondUserId: Long): Boolean
+    fun createFriendRequest(senderUserId: Long, recipientUserId: Long, now: Instant): FriendRequestRecord
+    fun listFriendRequests(userId: Long, incoming: Boolean): List<FriendRequestRecord>
+    fun transitionFriendRequest(
+        requestId: Long,
+        actorUserId: Long,
+        action: FriendRequestAction,
+        now: Instant
+    ): FriendRequestRecord?
+    fun listFriends(userId: Long): List<AuthUser>
     fun createSession(session: AuthSession)
     fun rotateSession(oldHash: String, newHash: String, accessExpiresAt: Instant, refreshExpiresAt: Instant, now: Instant): AuthSession?
     fun revokeSession(sessionId: UUID, refreshTokenHash: String, userId: Long, now: Instant): Boolean
@@ -26,7 +37,7 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
                 """
                 INSERT INTO users (email, username, display_name, password_hash, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?)
-                RETURNING id, email, username, display_name, password_hash, normalized_phone,
+                RETURNING id, email, username, display_name, password_hash, normalized_phone, phone_verified_at,
                           phone_discoverable, avatar_url, bio, privacy_settings::text, created_at, updated_at
                 """.trimIndent()
             ).use { statement ->
@@ -46,7 +57,7 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
     override fun findUserByEmail(email: String) = database.withConnection { connection ->
         connection.prepareStatement(
             """
-            SELECT id, email, username, display_name, password_hash, normalized_phone,
+            SELECT id, email, username, display_name, password_hash, normalized_phone, phone_verified_at,
                    phone_discoverable, avatar_url, bio, privacy_settings::text, created_at, updated_at
             FROM users WHERE email = ? AND status = 'ACTIVE'
             """.trimIndent()
@@ -59,7 +70,7 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
     override fun findUserById(userId: Long) = database.withConnection { connection ->
         connection.prepareStatement(
             """
-            SELECT id, email, username, display_name, password_hash, normalized_phone,
+            SELECT id, email, username, display_name, password_hash, normalized_phone, phone_verified_at,
                    phone_discoverable, avatar_url, bio, privacy_settings::text, created_at, updated_at
             FROM users WHERE id = ? AND status = 'ACTIVE'
             """.trimIndent()
@@ -78,7 +89,7 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
                     bio = CASE WHEN ? THEN NULLIF(?, '') ELSE bio END,
                     updated_at = ?
                 WHERE id = ? AND status = 'ACTIVE'
-                RETURNING id, email, username, display_name, password_hash, normalized_phone,
+                RETURNING id, email, username, display_name, password_hash, normalized_phone, phone_verified_at,
                           phone_discoverable, avatar_url, bio, privacy_settings::text, created_at, updated_at
                 """.trimIndent()
             ).use { statement ->
@@ -95,7 +106,7 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
         database.withConnection { connection ->
             connection.prepareStatement(
                 """
-                SELECT id, email, username, display_name, password_hash, normalized_phone,
+                SELECT id, email, username, display_name, password_hash, normalized_phone, phone_verified_at,
                        phone_discoverable, avatar_url, bio, privacy_settings::text, created_at, updated_at
                 FROM users
                 WHERE status = 'ACTIVE' AND id <> ? AND id > ?
@@ -117,13 +128,162 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
     override fun findDiscoverableUserByPhone(phone: String) = database.withConnection { connection ->
         connection.prepareStatement(
             """
-            SELECT id, email, username, display_name, password_hash, normalized_phone,
+            SELECT id, email, username, display_name, password_hash, normalized_phone, phone_verified_at,
                    phone_discoverable, avatar_url, bio, privacy_settings::text, created_at, updated_at
-            FROM users WHERE normalized_phone = ? AND phone_discoverable = TRUE AND status = 'ACTIVE'
+            FROM users WHERE normalized_phone = ? AND phone_discoverable = TRUE
+              AND phone_verified_at IS NOT NULL AND status = 'ACTIVE'
             """.trimIndent()
         ).use { statement ->
             statement.setString(1, phone)
             statement.executeQuery().use { result -> if (result.next()) result.toAuthUser() else null }
+        }
+    }
+
+    override fun updatePhoneDiscovery(userId: Long, discoverable: Boolean, now: Instant) =
+        database.withConnection { connection ->
+            connection.prepareStatement(
+                """
+                UPDATE users
+                SET phone_discoverable = ?, updated_at = ?
+                WHERE id = ? AND status = 'ACTIVE'
+                  AND (? = FALSE OR (normalized_phone IS NOT NULL AND phone_verified_at IS NOT NULL))
+                RETURNING id, email, username, display_name, password_hash, normalized_phone, phone_verified_at,
+                          phone_discoverable, avatar_url, bio, privacy_settings::text, created_at, updated_at
+                """.trimIndent()
+            ).use { statement ->
+                statement.setBoolean(1, discoverable)
+                statement.setObject(2, now)
+                statement.setLong(3, userId)
+                statement.setBoolean(4, discoverable)
+                statement.executeQuery().use { result -> if (result.next()) result.toAuthUser() else null }
+            }
+        }
+
+    override fun areFriends(firstUserId: Long, secondUserId: Long) = database.withConnection { connection ->
+        connection.prepareStatement(
+            """
+            SELECT 1 FROM friend_relationships
+            WHERE user_low_id = LEAST(?, ?) AND user_high_id = GREATEST(?, ?)
+            """.trimIndent()
+        ).use { statement ->
+            statement.setLong(1, firstUserId)
+            statement.setLong(2, secondUserId)
+            statement.setLong(3, firstUserId)
+            statement.setLong(4, secondUserId)
+            statement.executeQuery().use(ResultSet::next)
+        }
+    }
+
+    override fun createFriendRequest(senderUserId: Long, recipientUserId: Long, now: Instant) =
+        database.withConnection { connection ->
+            connection.inTransaction {
+                connection.lockFriendPair(senderUserId, recipientUserId)
+                if (connection.areFriends(senderUserId, recipientUserId)) {
+                    throw AlreadyFriendsException()
+                }
+                if (connection.hasPendingFriendRequest(senderUserId, recipientUserId)) {
+                    throw PendingFriendRequestExistsException()
+                }
+                connection.prepareStatement(
+                    """
+                    INSERT INTO friend_requests(sender_user_id, recipient_user_id, status, created_at)
+                    VALUES (?, ?, 'PENDING', ?)
+                    RETURNING id, sender_user_id, recipient_user_id, status, created_at, responded_at
+                    """.trimIndent()
+                ).use { statement ->
+                    statement.setLong(1, senderUserId)
+                    statement.setLong(2, recipientUserId)
+                    statement.setObject(3, now)
+                    statement.executeQuery().use { result ->
+                        check(result.next()) { "Friend request insert did not return a row" }
+                        result.toFriendRequestRecord()
+                    }
+                }
+            }
+        }
+
+    override fun listFriendRequests(userId: Long, incoming: Boolean) = database.withConnection { connection ->
+        val ownerColumn = if (incoming) "recipient_user_id" else "sender_user_id"
+        connection.prepareStatement(
+            """
+            SELECT id, sender_user_id, recipient_user_id, status, created_at, responded_at
+            FROM friend_requests
+            WHERE $ownerColumn = ?
+            ORDER BY created_at DESC, id DESC
+            """.trimIndent()
+        ).use { statement ->
+            statement.setLong(1, userId)
+            statement.executeQuery().use { result -> result.toFriendRequestRecords() }
+        }
+    }
+
+    override fun transitionFriendRequest(
+        requestId: Long,
+        actorUserId: Long,
+        action: FriendRequestAction,
+        now: Instant
+    ) = database.withConnection { connection ->
+        connection.inTransaction {
+            val current = connection.findPendingFriendRequest(requestId, actorUserId, action) ?: return@inTransaction null
+            connection.lockFriendPair(current.senderUserId, current.recipientUserId)
+
+            val newStatus = when (action) {
+                FriendRequestAction.ACCEPT -> FriendRequestStatus.ACCEPTED
+                FriendRequestAction.REJECT -> FriendRequestStatus.REJECTED
+                FriendRequestAction.CANCEL -> FriendRequestStatus.CANCELED
+            }
+            val updated = connection.prepareStatement(
+                """
+                UPDATE friend_requests
+                SET status = ?, responded_at = ?
+                WHERE id = ? AND status = 'PENDING'
+                  AND ${action.ownerColumn} = ?
+                RETURNING id, sender_user_id, recipient_user_id, status, created_at, responded_at
+                """.trimIndent()
+            ).use { statement ->
+                statement.setString(1, newStatus.name)
+                statement.setObject(2, now)
+                statement.setLong(3, requestId)
+                statement.setLong(4, actorUserId)
+                statement.executeQuery().use { result -> if (result.next()) result.toFriendRequestRecord() else null }
+            } ?: return@inTransaction null
+
+            if (action == FriendRequestAction.ACCEPT) {
+                connection.prepareStatement(
+                    """
+                    INSERT INTO friend_relationships(user_low_id, user_high_id, created_at)
+                    VALUES (LEAST(?, ?), GREATEST(?, ?), ?)
+                    ON CONFLICT (user_low_id, user_high_id) DO NOTHING
+                    """.trimIndent()
+                ).use { statement ->
+                    statement.setLong(1, updated.senderUserId)
+                    statement.setLong(2, updated.recipientUserId)
+                    statement.setLong(3, updated.senderUserId)
+                    statement.setLong(4, updated.recipientUserId)
+                    statement.setObject(5, now)
+                    statement.executeUpdate()
+                }
+            }
+            updated
+        }
+    }
+
+    override fun listFriends(userId: Long) = database.withConnection { connection ->
+        connection.prepareStatement(
+            """
+            SELECT u.id, u.email, u.username, u.display_name, u.password_hash, u.normalized_phone,
+                   u.phone_verified_at, u.phone_discoverable, u.avatar_url, u.bio,
+                   u.privacy_settings::text, u.created_at, u.updated_at
+            FROM friend_relationships f
+            JOIN users u ON u.id = CASE WHEN f.user_low_id = ? THEN f.user_high_id ELSE f.user_low_id END
+            WHERE (f.user_low_id = ? OR f.user_high_id = ?) AND u.status = 'ACTIVE'
+            ORDER BY u.display_name, u.id
+            """.trimIndent()
+        ).use { statement ->
+            statement.setLong(1, userId)
+            statement.setLong(2, userId)
+            statement.setLong(3, userId)
+            statement.executeQuery().use { result -> result.toAuthUsers() }
         }
     }
 
@@ -216,7 +376,9 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
     private fun ResultSet.toAuthUser() = AuthUser(
         id = getLong("id"), email = getString("email"), username = getString("username"),
         displayName = getString("display_name"), passwordHash = getString("password_hash"),
-        normalizedPhone = getString("normalized_phone"), phoneDiscoverable = getBoolean("phone_discoverable"),
+        normalizedPhone = getString("normalized_phone"),
+        phoneVerifiedAt = getTimestamp("phone_verified_at")?.toInstant(),
+        phoneDiscoverable = getBoolean("phone_discoverable"),
         avatarUrl = getString("avatar_url"), bio = getString("bio"),
         privacySettings = getString("privacy_settings"), createdAt = getTimestamp("created_at").toInstant(),
         updatedAt = getTimestamp("updated_at").toInstant()
@@ -234,7 +396,99 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
     private fun ResultSet.toAuthUsers(): List<AuthUser> = buildList {
         while (next()) add(toAuthUser())
     }
+
+}
+
+private fun ResultSet.toFriendRequestRecord() = FriendRequestRecord(
+    id = getLong("id"),
+    senderUserId = getLong("sender_user_id"),
+    recipientUserId = getLong("recipient_user_id"),
+    status = FriendRequestStatus.valueOf(getString("status")),
+    createdAt = getTimestamp("created_at").toInstant(),
+    respondedAt = getTimestamp("responded_at")?.toInstant()
+)
+
+private fun ResultSet.toFriendRequestRecords(): List<FriendRequestRecord> = buildList {
+    while (next()) add(toFriendRequestRecord())
+}
+
+private fun java.sql.Connection.lockFriendPair(firstUserId: Long, secondUserId: Long) {
+    prepareStatement(
+        "SELECT pg_advisory_xact_lock(hashtextextended(LEAST(?, ?)::text || ':' || GREATEST(?, ?)::text, 0))"
+    ).use { statement ->
+        statement.setLong(1, firstUserId)
+        statement.setLong(2, secondUserId)
+        statement.setLong(3, firstUserId)
+        statement.setLong(4, secondUserId)
+        statement.executeQuery().use { it.next() }
+    }
+}
+
+private fun java.sql.Connection.areFriends(firstUserId: Long, secondUserId: Long): Boolean =
+    prepareStatement(
+        "SELECT 1 FROM friend_relationships WHERE user_low_id = LEAST(?, ?) AND user_high_id = GREATEST(?, ?)"
+    ).use { statement ->
+        statement.setLong(1, firstUserId)
+        statement.setLong(2, secondUserId)
+        statement.setLong(3, firstUserId)
+        statement.setLong(4, secondUserId)
+        statement.executeQuery().use(ResultSet::next)
+    }
+
+private fun java.sql.Connection.hasPendingFriendRequest(firstUserId: Long, secondUserId: Long): Boolean =
+    prepareStatement(
+        """
+        SELECT 1 FROM friend_requests
+        WHERE status = 'PENDING' AND LEAST(sender_user_id, recipient_user_id) = LEAST(?, ?)
+          AND GREATEST(sender_user_id, recipient_user_id) = GREATEST(?, ?)
+        """.trimIndent()
+    ).use { statement ->
+        statement.setLong(1, firstUserId)
+        statement.setLong(2, secondUserId)
+        statement.setLong(3, firstUserId)
+        statement.setLong(4, secondUserId)
+        statement.executeQuery().use(ResultSet::next)
+    }
+
+private fun java.sql.Connection.findPendingFriendRequest(
+    requestId: Long,
+    actorUserId: Long,
+    action: FriendRequestAction
+): FriendRequestRecord? = prepareStatement(
+    """
+    SELECT id, sender_user_id, recipient_user_id, status, created_at, responded_at
+    FROM friend_requests
+    WHERE id = ? AND status = 'PENDING' AND ${action.ownerColumn} = ?
+    """.trimIndent()
+).use { statement ->
+    statement.setLong(1, requestId)
+    statement.setLong(2, actorUserId)
+    statement.executeQuery().use { result -> if (result.next()) result.toFriendRequestRecord() else null }
+}
+
+private inline fun <T> java.sql.Connection.inTransaction(block: () -> T): T {
+    val previousAutoCommit = autoCommit
+    autoCommit = false
+    try {
+        val result = block()
+        commit()
+        return result
+    } catch (exception: Throwable) {
+        runCatching(::rollback)
+        throw exception
+    } finally {
+        autoCommit = previousAutoCommit
+    }
 }
 
 internal class AuthStorageUnavailableException : IllegalStateException("Authentication storage is unavailable")
 internal class DuplicateUserException : IllegalStateException("User already exists")
+internal class AlreadyFriendsException : IllegalStateException("Users are already friends")
+internal class PendingFriendRequestExistsException : IllegalStateException("A friend request already exists for these users")
+internal class FriendRequestNotFoundException : NoSuchElementException("Friend request was not found")
+
+internal enum class FriendRequestAction(val ownerColumn: String) {
+    ACCEPT("recipient_user_id"),
+    REJECT("recipient_user_id"),
+    CANCEL("sender_user_id")
+}
