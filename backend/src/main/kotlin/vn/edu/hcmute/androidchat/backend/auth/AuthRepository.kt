@@ -12,7 +12,7 @@ internal interface AuthRepository {
     fun createUser(email: String, username: String, displayName: String, passwordHash: String, now: Instant): AuthUser
     fun findUserByEmail(email: String): AuthUser?
     fun findUserById(userId: Long): AuthUser?
-    fun updateProfile(userId: Long, displayName: String?, bio: String?, now: Instant): AuthUser?
+    fun updateProfile(userId: Long, displayName: String?, bio: String?, avatarUrl: String? = null, now: Instant): AuthUser?
     fun searchUsers(query: String, afterId: Long?, excludeUserId: Long, limit: Int): List<AuthUser>
     fun findDiscoverableUserByPhone(phone: String, requesterUserId: Long): AuthUser?
     fun updatePhoneDiscovery(userId: Long, discoverable: Boolean, now: Instant): AuthUser?
@@ -86,13 +86,14 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
         }
     }
 
-    override fun updateProfile(userId: Long, displayName: String?, bio: String?, now: Instant) =
+    override fun updateProfile(userId: Long, displayName: String?, bio: String?, avatarUrl: String?, now: Instant) =
         database.withConnection { connection ->
             connection.prepareStatement(
                 """
                 UPDATE users
                 SET display_name = COALESCE(?, display_name),
                     bio = CASE WHEN ? THEN NULLIF(?, '') ELSE bio END,
+                    avatar_url = CASE WHEN ? THEN NULLIF(?, '') ELSE avatar_url END,
                     updated_at = ?
                 WHERE id = ? AND status = 'ACTIVE'
                 RETURNING id, email, username, display_name, password_hash, normalized_phone, phone_verified_at,
@@ -102,8 +103,10 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
                 statement.setString(1, displayName)
                 statement.setBoolean(2, bio != null)
                 statement.setString(3, bio)
-                statement.setInstant(4, now)
-                statement.setLong(5, userId)
+                statement.setBoolean(4, avatarUrl != null)
+                statement.setString(5, avatarUrl)
+                statement.setInstant(6, now)
+                statement.setLong(7, userId)
                 statement.executeQuery().use { result -> if (result.next()) result.toAuthUser() else null }
             }
         }

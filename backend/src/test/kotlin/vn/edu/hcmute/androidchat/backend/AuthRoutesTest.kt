@@ -625,11 +625,12 @@ internal class InMemoryAuthRepository : AuthRepository {
     override fun findUserById(userId: Long) = users[userId]
 
     @Synchronized
-    override fun updateProfile(userId: Long, displayName: String?, bio: String?, now: Instant): AuthUser? {
+    override fun updateProfile(userId: Long, displayName: String?, bio: String?, avatarUrl: String?, now: Instant): AuthUser? {
         val user = users[userId] ?: return null
         val updated = user.copy(
             displayName = displayName ?: user.displayName,
             bio = if (bio == null) user.bio else bio.ifEmpty { null },
+            avatarUrl = if (avatarUrl == null) user.avatarUrl else avatarUrl.ifEmpty { null },
             updatedAt = now
         )
         users[userId] = updated

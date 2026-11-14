@@ -73,7 +73,8 @@ data class LogoutRequest(val refreshToken: String)
 @Serializable
 data class UpdateProfileRequest(
     val displayName: String? = null,
-    val bio: String? = null
+    val bio: String? = null,
+    val avatarUrl: String? = null
 )
 
 @Serializable

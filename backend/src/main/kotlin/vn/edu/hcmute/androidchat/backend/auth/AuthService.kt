@@ -95,16 +95,20 @@ internal class AuthService(
     fun updateProfile(userId: Long, request: UpdateProfileRequest): AuthUser {
         val displayName = request.displayName?.trim()
         val bio = request.bio?.trim()
+        val avatarUrl = request.avatarUrl?.trim()
         if (displayName != null && displayName.length !in 1..80) {
             throw AuthValidationException("Display name must contain between 1 and 80 characters")
         }
         if (bio != null && bio.length > 160) {
             throw AuthValidationException("Bio must not exceed 160 characters")
         }
-        if (request.displayName == null && request.bio == null) {
+        if (avatarUrl != null && avatarUrl.length > 512) {
+            throw AuthValidationException("Avatar URL must not exceed 512 characters")
+        }
+        if (request.displayName == null && request.bio == null && request.avatarUrl == null) {
             throw AuthValidationException("At least one profile field must be provided")
         }
-        return repository.updateProfile(userId, displayName, bio, clock.instant())
+        return repository.updateProfile(userId, displayName, bio, avatarUrl, clock.instant())
             ?: throw UserNotFoundException()
     }
 
