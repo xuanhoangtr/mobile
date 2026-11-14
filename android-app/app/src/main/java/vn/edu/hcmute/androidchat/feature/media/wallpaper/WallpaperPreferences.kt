@@ -1,12 +1,19 @@
 package vn.edu.hcmute.androidchat.feature.media.wallpaper
 
 import android.content.Context
+import androidx.compose.ui.graphics.Color
 
-enum class ChatWallpaper(val value: String) {
-    DEFAULT("default"),
-    SOFT_BLUE("soft_blue"),
-    SOFT_GREEN("soft_green"),
-    WARM("warm")
+enum class ChatWallpaper(
+    val value: String,
+    val backgroundColorHex: Long,
+    val displayName: String
+) {
+    DEFAULT("default", 0xFFF8F9FFL, "Mặc định"),
+    SOFT_BLUE("soft_blue", 0xFFE8F0FEL, "Xanh dịu"),
+    SOFT_GREEN("soft_green", 0xFFE6F4EAL, "Xanh lá"),
+    WARM("warm", 0xFFFFF4E5L, "Ấm áp");
+
+    fun toComposeColor(): Color = Color(backgroundColorHex)
 }
 
 class WallpaperPreferences(context: Context) {

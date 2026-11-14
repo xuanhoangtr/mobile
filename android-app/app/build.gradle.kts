@@ -57,6 +57,7 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.7")
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.okhttp)
+    implementation(libs.stream.webrtc.android)
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.org.json)

@@ -47,10 +47,16 @@ class HttpMediaUploadService(
             if (status !in 200..299) throw MediaException(MediaError.UPLOAD_FAILED)
             val response = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
             val json = JSONObject(response)
+            val parsedName = if (json.has("fileName") && !json.isNull("fileName")) {
+                json.optString("fileName", media.name).ifBlank { media.name }
+            } else {
+                media.name
+            }
             UploadedMedia(
                 mediaId = json.getLong("id"),
                 mimeType = json.getString("mimeType"),
-                byteSize = json.getLong("byteSize")
+                byteSize = json.getLong("byteSize"),
+                fileName = parsedName
             )
         } catch (failure: MediaException) {
             throw failure

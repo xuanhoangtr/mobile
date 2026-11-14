@@ -261,6 +261,35 @@ class MediaFoundationTest {
         assertTrue(closed)
     }
 
+    @Test fun uploadedMediaDefaultsFileNameAndHttpServiceParsesFileName() = runTest(dispatcher) {
+        val defaultUploaded = UploadedMedia(10L, "image/png", 123L)
+        assertEquals("", defaultUploaded.fileName)
+
+        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/upload") { exchange ->
+            exchange.requestBody.use { it.readBytes() }
+            val body = """{"id":77,"mimeType":"text/plain","byteSize":5,"fileName":"server_hello.txt"}""".toByteArray()
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.start()
+        try {
+            val service = HttpMediaUploadService(
+                endpoint = java.net.URL("http://127.0.0.1:${server.address.port}/upload"),
+                accessToken = { "test-token" }
+            )
+            val result = withContext(Dispatchers.IO) {
+                service.upload(selected, ByteArrayInputStream("hello".toByteArray()), conversationId = 12L)
+            }
+            assertEquals(77L, result.mediaId)
+            assertEquals("text/plain", result.mimeType)
+            assertEquals(5L, result.byteSize)
+            assertEquals("server_hello.txt", result.fileName)
+        } finally {
+            server.stop(0)
+        }
+    }
+
     private inner class FakeRepository : MediaRepository {
         var selectionError: Exception? = null
         var uploadError: Exception? = null

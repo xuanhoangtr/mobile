@@ -18,7 +18,19 @@ object StickerCatalog {
         Sticker("laugh", "😂", "Laugh"),
         Sticker("party", "🎉", "Party"),
         Sticker("thumbs-up", "👍", "Thumbs up"),
-        Sticker("fire", "🔥", "Fire")
+        Sticker("fire", "🔥", "Fire"),
+        Sticker("love-eyes", "😍", "Love"),
+        Sticker("cry-laugh", "🤣", "ROFL"),
+        Sticker("wink", "😉", "Wink"),
+        Sticker("cool", "😎", "Cool"),
+        Sticker("hug", "🤗", "Hug"),
+        Sticker("sad", "😢", "Sad"),
+        Sticker("angry", "😡", "Angry"),
+        Sticker("surprised", "😮", "Wow"),
+        Sticker("clap", "👏", "Clap"),
+        Sticker("pray", "🙏", "Thanks"),
+        Sticker("star", "⭐", "Star"),
+        Sticker("coffee", "☕", "Coffee")
     )
 
     fun find(id: String): Sticker? = stickers.firstOrNull { it.id == id }

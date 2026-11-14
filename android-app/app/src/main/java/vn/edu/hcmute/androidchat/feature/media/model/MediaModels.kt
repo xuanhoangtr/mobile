@@ -9,7 +9,12 @@ data class SelectedMedia(
 )
 
 /** Upload completion is not CHAT delivery or a conversation-access grant. */
-data class UploadedMedia(val mediaId: Long, val mimeType: String, val byteSize: Long)
+data class UploadedMedia(
+    val mediaId: Long,
+    val mimeType: String,
+    val byteSize: Long,
+    val fileName: String = ""
+)
 
 enum class MediaPhase { EMPTY, SELECTING, SELECTED, UPLOADING, UPLOADED, CANCELLED, ERROR }
 enum class MediaError { URI_ACCESS, UNSUPPORTED_TYPE, TOO_LARGE, EMPTY_FILE, UPLOAD_FAILED, INTEGRATION_BLOCKED, PREVIEW_FAILED, PICKER_UNAVAILABLE }

@@ -12,4 +12,13 @@ class StickerCatalogTest {
         assertEquals("👍", sticker?.unicode)
         assertEquals("STICKER", StickerAttachment(sticker!!.id).messageType)
     }
+
+    @Test
+    fun catalogContainsEighteenUniqueStickersIncludingOriginalSix() {
+        assertEquals(18, StickerCatalog.stickers.size)
+        assertEquals(18, StickerCatalog.stickers.map { it.id }.toSet().size)
+        listOf("smile", "heart", "laugh", "party", "thumbs-up", "fire").forEach { id ->
+            assertNotNull("Missing original sticker id=$id", StickerCatalog.find(id))
+        }
+    }
 }

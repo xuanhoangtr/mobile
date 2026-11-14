@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Audiotrack
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Image
@@ -39,6 +40,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
@@ -51,9 +53,13 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -84,9 +90,30 @@ private enum class MediaPickerKind { PHOTO, VIDEO, AUDIO, DOCUMENT }
 
 /** MEDIA entrypoint remains independently embeddable; chat navigation can host it later. */
 @Composable
-fun MediaPickerScreen(viewModel: MediaViewModel, modifier: Modifier = Modifier) {
+fun MediaPickerScreen(
+    viewModel: MediaViewModel,
+    modifier: Modifier = Modifier,
+    conversationId: Long? = null,
+    onBackClick: (() -> Unit)? = null,
+    onMediaUploaded: ((UploadedMedia, SelectedMedia) -> Unit)? = null
+) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+    var lastNotifiedUpload by remember { mutableStateOf<UploadedMedia?>(null) }
+
+    LaunchedEffect(state.phase, state.uploaded, state.selected) {
+        val uploaded = state.uploaded
+        val selected = state.selected
+        if (state.phase == MediaPhase.UPLOADED && uploaded != null && selected != null) {
+            if (uploaded != lastNotifiedUpload) {
+                lastNotifiedUpload = uploaded
+                onMediaUploaded?.invoke(uploaded, selected)
+            }
+        } else if (state.phase != MediaPhase.UPLOADED) {
+            lastNotifiedUpload = null
+        }
+    }
+
     val visualPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         viewModel.onPickerResult(uri?.toString())
     }
@@ -96,6 +123,7 @@ fun MediaPickerScreen(viewModel: MediaViewModel, modifier: Modifier = Modifier) 
 
     MediaPickerContent(
         state = state,
+        onBackClick = onBackClick,
         onChooseClick = { kind ->
             viewModel.pickerOpened()
             try {
@@ -117,9 +145,9 @@ fun MediaPickerScreen(viewModel: MediaViewModel, modifier: Modifier = Modifier) 
                 viewModel.pickerLaunchFailed()
             }
         },
-        onUploadClick = viewModel::upload,
+        onUploadClick = { viewModel.upload(conversationId) },
         onCancelClick = viewModel::cancel,
-        onRetryClick = viewModel::upload,
+        onRetryClick = { viewModel.upload(conversationId) },
         onClearClick = viewModel::clear,
         onPreviewClick = {
             state.selected?.let { media ->
@@ -146,6 +174,7 @@ fun MediaPickerScreen(viewModel: MediaViewModel, modifier: Modifier = Modifier) 
 @Composable
 private fun MediaPickerContent(
     state: MediaUiState,
+    onBackClick: (() -> Unit)? = null,
     onChooseClick: (MediaPickerKind) -> Unit,
     onUploadClick: () -> Unit,
     onCancelClick: () -> Unit,
@@ -167,6 +196,17 @@ private fun MediaPickerContent(
                     containerColor = ChatStitchTokens.CardWhite,
                     titleContentColor = ChatStitchTokens.TextPrimary
                 ),
+                navigationIcon = {
+                    if (onBackClick != null) {
+                        IconButton(onClick = onBackClick) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                                contentDescription = stringResource(R.string.chat_back),
+                                tint = ChatStitchTokens.TextPrimary
+                            )
+                        }
+                    }
+                },
                 title = {
                     Column {
                         Text(
