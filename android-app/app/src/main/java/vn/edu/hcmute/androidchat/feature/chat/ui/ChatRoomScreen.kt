@@ -86,7 +86,9 @@ fun ChatRoomScreen(
     onCancelVoiceRecording: () -> Unit = {},
     onToggleVoicePlayback: () -> Unit = {},
     onSendVoice: () -> Unit = {},
-    onDiscardVoice: () -> Unit = {}
+    onDiscardVoice: () -> Unit = {},
+    playingVoiceMessageId: String? = null,
+    onPlayVoiceMessage: ((MessageUiModel) -> Unit)? = null
 ) {
     Scaffold(
         modifier = modifier
@@ -252,7 +254,11 @@ fun ChatRoomScreen(
                             )
                         )
                     }
-                    MessageBubble(message = message)
+                    MessageBubble(
+                        message = message,
+                        isPlayingVoice = playingVoiceMessageId == message.localId,
+                        onPlayVoiceClick = onPlayVoiceMessage?.let { handler -> { handler(message) } }
+                    )
                 }
             }
         }
@@ -283,8 +289,22 @@ private fun DateSeparator(label: String) {
 }
 
 @Composable
-private fun MessageBubble(message: MessageUiModel) {
+private fun MessageBubble(
+    message: MessageUiModel,
+    isPlayingVoice: Boolean = false,
+    onPlayVoiceClick: (() -> Unit)? = null
+) {
     val isMine = message.isFromCurrentUser
+    val voiceMediaId = if (message.type == MessageType.VOICE) {
+        extractVoiceMediaId(message.content)
+    } else {
+        null
+    }
+    val displayText = if (message.type == MessageType.VOICE) {
+        formatVoiceBubbleText(message.content)
+    } else {
+        message.content
+    }
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start
@@ -303,18 +323,33 @@ private fun MessageBubble(message: MessageUiModel) {
             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     if (message.type == MessageType.VOICE) {
-                        Icon(
-                            imageVector = Icons.Filled.Mic,
-                            contentDescription = null,
-                            tint = if (isMine) Color.White else ChatStitchTokens.BrandBlue,
-                            modifier = Modifier.size(18.dp)
-                        )
+                        if (voiceMediaId != null && onPlayVoiceClick != null) {
+                            IconButton(
+                                onClick = onPlayVoiceClick,
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isPlayingVoice) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                    contentDescription = stringResource(
+                                        if (isPlayingVoice) R.string.chat_voice_pause else R.string.chat_voice_play
+                                    ),
+                                    tint = if (isMine) Color.White else ChatStitchTokens.BrandBlue
+                                )
+                            }
+                        } else {
+                            Icon(
+                                imageVector = Icons.Filled.Mic,
+                                contentDescription = null,
+                                tint = if (isMine) Color.White else ChatStitchTokens.BrandBlue,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                     }
                     Text(
-                        text = message.content,
+                        text = displayText,
                         color = if (isMine) Color.White else ChatStitchTokens.TextPrimary,
                         fontSize = 15.sp
                     )
@@ -484,6 +519,17 @@ private fun formatVoiceDuration(durationMs: Long): String {
     val totalSeconds = durationMs / 1_000L
     return "%d:%02d".format(totalSeconds / 60L, totalSeconds % 60L)
 }
+
+internal fun extractVoiceMediaId(content: String): Long? {
+    val match = Regex("""(?:\[media:|#)(\d+)\]?""").find(content) ?: return null
+    return match.groupValues[1].toLongOrNull()
+}
+
+private fun formatVoiceBubbleText(content: String): String =
+    content
+        .replace(Regex("""\s*\[media:\d+\]"""), "")
+        .replace(Regex("""\s*#\d+"""), "")
+        .trim()
 
 @Preview(showBackground = true)
 @Composable

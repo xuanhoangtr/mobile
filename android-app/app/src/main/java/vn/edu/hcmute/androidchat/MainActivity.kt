@@ -34,7 +34,9 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import vn.edu.hcmute.androidchat.feature.auth.AuthFeature
 import vn.edu.hcmute.androidchat.feature.auth.ui.AuthEntryScreen
 import vn.edu.hcmute.androidchat.feature.auth.viewmodel.AuthViewModel
@@ -45,6 +47,7 @@ import vn.edu.hcmute.androidchat.feature.chat.model.ConversationType
 import vn.edu.hcmute.androidchat.feature.chat.model.WsConnectionState
 import vn.edu.hcmute.androidchat.feature.chat.ui.ChatListScreen
 import vn.edu.hcmute.androidchat.feature.chat.ui.ChatRoomScreen
+import vn.edu.hcmute.androidchat.feature.chat.ui.extractVoiceMediaId
 import vn.edu.hcmute.androidchat.feature.chat.viewmodel.ChatListViewModel
 import vn.edu.hcmute.androidchat.feature.chat.viewmodel.ChatRoomViewModel
 import vn.edu.hcmute.androidchat.feature.contacts.ui.ContactsSearchScreen
@@ -157,6 +160,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val voiceMessagePlayback by lazy { AndroidVoicePlayback(applicationContext) }
+
     private val voiceViewModel: VoiceMessageViewModel by viewModels {
         object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
@@ -216,6 +221,7 @@ class MainActivity : ComponentActivity() {
                     BackHandler(enabled = currentRoute != SkeletonRoute.CHAT_LIST) {
                         if (currentRoute == SkeletonRoute.CHAT_ROOM) {
                             voiceViewModel.clear()
+                            voiceMessagePlayback.stop()
                         }
                         currentRoute = when (currentRoute) {
                             SkeletonRoute.MEDIA_PICKER -> SkeletonRoute.CHAT_ROOM
@@ -296,10 +302,13 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
                             }
+                            var playingVoiceMessageId by remember { mutableStateOf<String?>(null) }
                             ChatRoomScreen(
                                 uiState = roomState,
                                 onBackClick = {
                                     voiceViewModel.clear()
+                                    voiceMessagePlayback.stop()
+                                    playingVoiceMessageId = null
                                     currentRoute = SkeletonRoute.CHAT_LIST
                                 },
                                 onDraftChange = chatRoomViewModel::onDraftChanged,
@@ -322,7 +331,31 @@ class MainActivity : ComponentActivity() {
                                 onCancelVoiceRecording = voiceViewModel::interrupt,
                                 onToggleVoicePlayback = voiceViewModel::togglePlayback,
                                 onSendVoice = { voiceViewModel.upload(roomState.conversationId) },
-                                onDiscardVoice = voiceViewModel::clear
+                                onDiscardVoice = voiceViewModel::clear,
+                                playingVoiceMessageId = playingVoiceMessageId,
+                                onPlayVoiceMessage = { message ->
+                                    if (playingVoiceMessageId == message.localId) {
+                                        voiceMessagePlayback.stop()
+                                        playingVoiceMessageId = null
+                                    } else {
+                                        val mediaId = extractVoiceMediaId(message.content)
+                                        if (mediaId != null) {
+                                            settingsScope.launch {
+                                                val audioFile = downloadVoiceFileIfNeeded(mediaId)
+                                                if (audioFile != null && audioFile.length() > 0L) {
+                                                    runCatching {
+                                                        playingVoiceMessageId = message.localId
+                                                        voiceMessagePlayback.play(audioFile.absolutePath) {
+                                                            playingVoiceMessageId = null
+                                                        }
+                                                    }.onFailure {
+                                                        playingVoiceMessageId = null
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             )
                         }
 
@@ -416,7 +449,43 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         if (isFinishing) {
+            voiceMessagePlayback.stop()
             chatTransport.disconnect()
+        }
+    }
+
+    private suspend fun downloadVoiceFileIfNeeded(mediaId: Long): File? = withContext(Dispatchers.IO) {
+        val voiceDir = File(cacheDir, "voice").apply { mkdirs() }
+        val target = File(voiceDir, "msg-$mediaId.m4a")
+        if (target.isFile && target.length() > 0L) return@withContext target
+
+        val token = authFeature.tokenProvider.accessToken() ?: cachedAccessToken.orEmpty()
+        if (token.isBlank()) return@withContext null
+
+        val connection = (URL("${backendBaseUrl.trimEnd('/')}/media/$mediaId/download")
+            .openConnection() as java.net.HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 10_000
+            readTimeout = 15_000
+            setRequestProperty("Authorization", "Bearer $token")
+        }
+        try {
+            if (connection.responseCode !in 200..299) return@withContext null
+            val temp = File(voiceDir, "msg-$mediaId.tmp")
+            connection.inputStream.use { input ->
+                temp.outputStream().use { output -> input.copyTo(output) }
+            }
+            if (temp.length() <= 0L) {
+                temp.delete()
+                return@withContext null
+            }
+            if (target.exists()) target.delete()
+            temp.renameTo(target)
+            target
+        } catch (_: Exception) {
+            null
+        } finally {
+            connection.disconnect()
         }
     }
 

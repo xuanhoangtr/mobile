@@ -230,7 +230,7 @@ class ChatRoomViewModel(
         val durationLabel = "%d:%02d".format(totalSeconds / 60L, totalSeconds % 60L)
         return enqueueOutgoingMessage(
             currentUserId = currentUserId,
-            content = "Tin nhắn thoại ($durationLabel)",
+            content = "Tin nhắn thoại ($durationLabel) [media:$mediaId]",
             type = MessageType.VOICE,
             createdAtLabel = createdAtLabel,
             isTransportConnected = isTransportConnected,
