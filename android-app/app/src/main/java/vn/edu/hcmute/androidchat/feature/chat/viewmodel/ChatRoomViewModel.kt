@@ -204,9 +204,50 @@ class ChatRoomViewModel(
         createdAtLabel: String,
         isTransportConnected: Boolean = false
     ): MessageUiModel? {
+        val trimmed = _uiState.value.draftText.trim()
+        if (trimmed.isEmpty()) return null
+        return enqueueOutgoingMessage(
+            currentUserId = currentUserId,
+            content = trimmed,
+            type = MessageType.TEXT,
+            createdAtLabel = createdAtLabel,
+            isTransportConnected = isTransportConnected,
+            clearDraft = true
+        )
+    }
+
+    /**
+     * Enqueues and dispatches an uploaded voice message (`MessageType.VOICE`) over WebSocket.
+     */
+    fun queueOutgoingVoiceMessage(
+        currentUserId: Long,
+        mediaId: Long,
+        durationMs: Long,
+        createdAtLabel: String,
+        isTransportConnected: Boolean = false
+    ): MessageUiModel? {
+        val totalSeconds = (durationMs / 1_000L).coerceAtLeast(1L)
+        val durationLabel = "%d:%02d".format(totalSeconds / 60L, totalSeconds % 60L)
+        return enqueueOutgoingMessage(
+            currentUserId = currentUserId,
+            content = "Tin nhắn thoại ($durationLabel)",
+            type = MessageType.VOICE,
+            createdAtLabel = createdAtLabel,
+            isTransportConnected = isTransportConnected,
+            clearDraft = false
+        )
+    }
+
+    private fun enqueueOutgoingMessage(
+        currentUserId: Long,
+        content: String,
+        type: MessageType,
+        createdAtLabel: String,
+        isTransportConnected: Boolean,
+        clearDraft: Boolean
+    ): MessageUiModel? {
         val currentState = _uiState.value
-        val trimmed = currentState.draftText.trim()
-        if (trimmed.isEmpty() || currentState.conversationId <= 0L) return null
+        if (content.isBlank() || currentState.conversationId <= 0L) return null
 
         activeCurrentUserId = currentUserId
         val clientMsgId = UUID.randomUUID().toString()
@@ -218,8 +259,8 @@ class ChatRoomViewModel(
             transport.sendMessage(
                 clientMessageId = clientMsgId,
                 conversationId = currentState.conversationId,
-                content = trimmed,
-                type = MessageType.TEXT,
+                content = content,
+                type = type,
                 replyToId = replyId
             )
         } else {
@@ -232,8 +273,8 @@ class ChatRoomViewModel(
             conversationId = currentState.conversationId,
             senderId = currentUserId,
             isFromCurrentUser = true,
-            type = MessageType.TEXT,
-            content = trimmed,
+            type = type,
+            content = content,
             createdAt = createdAtLabel,
             replyToId = replyId,
             deliveryStatus = if (dispatched) {
@@ -246,7 +287,7 @@ class ChatRoomViewModel(
         _uiState.update { state ->
             state.copy(
                 messages = state.messages + pendingMessage,
-                draftText = "",
+                draftText = if (clearDraft) "" else state.draftText,
                 replyingToMessage = null
             )
         }

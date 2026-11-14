@@ -1,11 +1,14 @@
 package vn.edu.hcmute.androidchat
 
+import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Column
@@ -20,12 +23,15 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import kotlinx.coroutines.launch
@@ -47,10 +53,16 @@ import vn.edu.hcmute.androidchat.feature.groups.model.GroupMemberUiModel
 import vn.edu.hcmute.androidchat.feature.groups.ui.CreateGroupScreen
 import vn.edu.hcmute.androidchat.feature.groups.viewmodel.CreateGroupViewModel
 import vn.edu.hcmute.androidchat.feature.media.data.AndroidMediaSource
+import vn.edu.hcmute.androidchat.feature.media.data.FileMediaSource
 import vn.edu.hcmute.androidchat.feature.media.data.HttpMediaUploadService
 import vn.edu.hcmute.androidchat.feature.media.data.StreamMediaRepository
 import vn.edu.hcmute.androidchat.feature.media.ui.MediaPickerScreen
 import vn.edu.hcmute.androidchat.feature.media.viewmodel.MediaViewModel
+import vn.edu.hcmute.androidchat.feature.media.voice.AndroidVoicePlayback
+import vn.edu.hcmute.androidchat.feature.media.voice.AndroidVoiceRecorder
+import vn.edu.hcmute.androidchat.feature.media.voice.VoiceMessageViewModel
+import vn.edu.hcmute.androidchat.feature.media.voice.VoicePhase
+import java.io.File
 import vn.edu.hcmute.androidchat.feature.settings.data.AuthAppSettingsStore
 import vn.edu.hcmute.androidchat.feature.settings.model.AppLanguage
 import vn.edu.hcmute.androidchat.feature.settings.model.AppThemePreference
@@ -117,29 +129,48 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    private fun createMediaUploadService(): HttpMediaUploadService = HttpMediaUploadService(
+        endpoint = URL("$backendBaseUrl/media/upload"),
+        accessToken = {
+            kotlinx.coroutines.runBlocking {
+                val fresh = authFeature.tokenProvider.accessToken()
+                if (!fresh.isNullOrBlank()) {
+                    cachedAccessToken = fresh
+                    fresh
+                } else {
+                    cachedAccessToken.orEmpty()
+                }
+            }
+        }
+    )
+
     private val mediaViewModel: MediaViewModel by viewModels {
         object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                val uploadService = HttpMediaUploadService(
-                    endpoint = URL("$backendBaseUrl/media/upload"),
-                    accessToken = {
-                        kotlinx.coroutines.runBlocking {
-                            val fresh = authFeature.tokenProvider.accessToken()
-                            if (!fresh.isNullOrBlank()) {
-                                cachedAccessToken = fresh
-                                fresh
-                            } else {
-                                cachedAccessToken.orEmpty()
-                            }
-                        }
-                    }
-                )
                 val repository = StreamMediaRepository(
                     source = AndroidMediaSource(applicationContext.contentResolver),
-                    service = uploadService
+                    service = createMediaUploadService()
                 )
                 return MediaViewModel(repository) as T
+            }
+        }
+    }
+
+    private val voiceViewModel: VoiceMessageViewModel by viewModels {
+        object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                val repository = StreamMediaRepository(
+                    source = FileMediaSource(),
+                    service = createMediaUploadService()
+                )
+                return VoiceMessageViewModel(
+                    recorder = AndroidVoiceRecorder(),
+                    playback = AndroidVoicePlayback(applicationContext),
+                    outputDirectory = File(cacheDir, "voice"),
+                    mediaRepository = repository
+                ) as T
             }
         }
     }
@@ -183,6 +214,9 @@ class MainActivity : ComponentActivity() {
                     AuthEntryScreen(viewModel = authViewModel)
                 } else {
                     BackHandler(enabled = currentRoute != SkeletonRoute.CHAT_LIST) {
+                        if (currentRoute == SkeletonRoute.CHAT_ROOM) {
+                            voiceViewModel.clear()
+                        }
                         currentRoute = when (currentRoute) {
                             SkeletonRoute.MEDIA_PICKER -> SkeletonRoute.CHAT_ROOM
                             SkeletonRoute.CHAT_ROOM,
@@ -218,7 +252,39 @@ class MainActivity : ComponentActivity() {
 
                         SkeletonRoute.CHAT_ROOM -> {
                             val roomState by chatRoomViewModel.uiState.collectAsState()
+                            val voiceState by voiceViewModel.uiState.collectAsState()
+                            val context = LocalContext.current
+                            var hasMicPermission by remember {
+                                mutableStateOf(
+                                    ContextCompat.checkSelfPermission(
+                                        context,
+                                        Manifest.permission.RECORD_AUDIO
+                                    ) == PackageManager.PERMISSION_GRANTED
+                                )
+                            }
+                            val micPermissionLauncher = rememberLauncherForActivityResult(
+                                contract = ActivityResultContracts.RequestPermission()
+                            ) { granted ->
+                                hasMicPermission = granted
+                                if (granted) {
+                                    voiceViewModel.startRecording()
+                                }
+                            }
                             val currentUserId = requireNotNull(authState.authenticatedUser).user.id
+                            LaunchedEffect(voiceState.phase, voiceState.attachment) {
+                                val attachment = voiceState.attachment
+                                if (voiceState.phase == VoicePhase.SENT && attachment != null) {
+                                    val nowLabel = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+                                    chatRoomViewModel.queueOutgoingVoiceMessage(
+                                        currentUserId = currentUserId,
+                                        mediaId = attachment.mediaId,
+                                        durationMs = attachment.durationMs,
+                                        createdAtLabel = nowLabel,
+                                        isTransportConnected = roomState.connectionState == WsConnectionState.CONNECTED
+                                    )
+                                    voiceViewModel.clear()
+                                }
+                            }
                             LaunchedEffect(roomState.conversationId, authState.authenticatedUser?.sessionId) {
                                 val token = authFeature.tokenProvider.accessToken()
                                 cachedAccessToken = token
@@ -232,7 +298,10 @@ class MainActivity : ComponentActivity() {
                             }
                             ChatRoomScreen(
                                 uiState = roomState,
-                                onBackClick = { currentRoute = SkeletonRoute.CHAT_LIST },
+                                onBackClick = {
+                                    voiceViewModel.clear()
+                                    currentRoute = SkeletonRoute.CHAT_LIST
+                                },
                                 onDraftChange = chatRoomViewModel::onDraftChanged,
                                 onSendClick = {
                                     val nowLabel = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
@@ -242,7 +311,18 @@ class MainActivity : ComponentActivity() {
                                         isTransportConnected = roomState.connectionState == WsConnectionState.CONNECTED
                                     )
                                 },
-                                onAttachMediaClick = { currentRoute = SkeletonRoute.MEDIA_PICKER }
+                                onAttachMediaClick = { currentRoute = SkeletonRoute.MEDIA_PICKER },
+                                voiceState = voiceState,
+                                hasMicrophonePermission = hasMicPermission,
+                                onRequestMicrophonePermission = {
+                                    micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                },
+                                onStartVoiceRecording = voiceViewModel::startRecording,
+                                onStopVoiceRecording = voiceViewModel::stopRecording,
+                                onCancelVoiceRecording = voiceViewModel::interrupt,
+                                onToggleVoicePlayback = voiceViewModel::togglePlayback,
+                                onSendVoice = { voiceViewModel.upload(roomState.conversationId) },
+                                onDiscardVoice = voiceViewModel::clear
                             )
                         }
 

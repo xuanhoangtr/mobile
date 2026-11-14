@@ -22,11 +22,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -48,8 +55,12 @@ import androidx.compose.ui.unit.sp
 import vn.edu.hcmute.androidchat.R
 import vn.edu.hcmute.androidchat.feature.chat.model.ChatRoomUiState
 import vn.edu.hcmute.androidchat.feature.chat.model.MessageDeliveryStatus
+import vn.edu.hcmute.androidchat.feature.chat.model.MessageType
 import vn.edu.hcmute.androidchat.feature.chat.model.MessageUiModel
 import vn.edu.hcmute.androidchat.feature.chat.model.WsConnectionState
+import vn.edu.hcmute.androidchat.feature.media.voice.VoiceError
+import vn.edu.hcmute.androidchat.feature.media.voice.VoicePhase
+import vn.edu.hcmute.androidchat.feature.media.voice.VoiceUiState
 import vn.edu.hcmute.androidchat.ui.theme.AndroidChatTheme
 
 /**
@@ -66,7 +77,16 @@ fun ChatRoomScreen(
     onDraftChange: (String) -> Unit,
     onSendClick: () -> Unit,
     modifier: Modifier = Modifier,
-    onAttachMediaClick: (() -> Unit)? = null
+    onAttachMediaClick: (() -> Unit)? = null,
+    voiceState: VoiceUiState? = null,
+    hasMicrophonePermission: Boolean = false,
+    onRequestMicrophonePermission: () -> Unit = {},
+    onStartVoiceRecording: () -> Unit = {},
+    onStopVoiceRecording: () -> Unit = {},
+    onCancelVoiceRecording: () -> Unit = {},
+    onToggleVoicePlayback: () -> Unit = {},
+    onSendVoice: () -> Unit = {},
+    onDiscardVoice: () -> Unit = {}
 ) {
     Scaffold(
         modifier = modifier
@@ -127,39 +147,67 @@ fun ChatRoomScreen(
                 color = ChatStitchTokens.CardWhite,
                 tonalElevation = 2.dp
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (onAttachMediaClick != null) {
-                        IconButton(onClick = onAttachMediaClick) {
-                            Icon(
-                                imageVector = Icons.Filled.Add,
-                                contentDescription = stringResource(R.string.media_foundation_title),
-                                tint = ChatStitchTokens.BrandBlue
-                            )
-                        }
-                    }
-                    OutlinedTextField(
-                        value = uiState.draftText,
-                        onValueChange = onDraftChange,
-                        placeholder = { Text(stringResource(R.string.chat_input_hint)) },
-                        shape = RoundedCornerShape(24.dp),
-                        maxLines = 4,
-                        modifier = Modifier.weight(1f)
+                if (voiceState != null && voiceState.phase != VoicePhase.IDLE && voiceState.phase != VoicePhase.SENT) {
+                    VoiceComposerBar(
+                        voiceState = voiceState,
+                        onStopRecording = onStopVoiceRecording,
+                        onCancelRecording = onCancelVoiceRecording,
+                        onTogglePlayback = onToggleVoicePlayback,
+                        onSendVoice = onSendVoice,
+                        onDiscardVoice = onDiscardVoice
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Button(
-                        onClick = onSendClick,
-                        enabled = uiState.draftText.trim().isNotEmpty(),
-                        shape = RoundedCornerShape(24.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ChatStitchTokens.BrandBlue
-                        )
+                } else {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(stringResource(R.string.chat_send))
+                        if (onAttachMediaClick != null) {
+                            IconButton(onClick = onAttachMediaClick) {
+                                Icon(
+                                    imageVector = Icons.Filled.Add,
+                                    contentDescription = stringResource(R.string.media_foundation_title),
+                                    tint = ChatStitchTokens.BrandBlue
+                                )
+                            }
+                        }
+                        if (voiceState != null) {
+                            IconButton(
+                                onClick = {
+                                    if (hasMicrophonePermission) {
+                                        onStartVoiceRecording()
+                                    } else {
+                                        onRequestMicrophonePermission()
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Mic,
+                                    contentDescription = stringResource(R.string.chat_voice_mic),
+                                    tint = ChatStitchTokens.BrandBlue
+                                )
+                            }
+                        }
+                        OutlinedTextField(
+                            value = uiState.draftText,
+                            onValueChange = onDraftChange,
+                            placeholder = { Text(stringResource(R.string.chat_input_hint)) },
+                            shape = RoundedCornerShape(24.dp),
+                            maxLines = 4,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(
+                            onClick = onSendClick,
+                            enabled = uiState.draftText.trim().isNotEmpty(),
+                            shape = RoundedCornerShape(24.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ChatStitchTokens.BrandBlue
+                            )
+                        ) {
+                            Text(stringResource(R.string.chat_send))
+                        }
                     }
                 }
             }
@@ -253,11 +301,24 @@ private fun MessageBubble(message: MessageUiModel) {
             modifier = Modifier.widthIn(max = 280.dp)
         ) {
             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                Text(
-                    text = message.content,
-                    color = if (isMine) Color.White else ChatStitchTokens.TextPrimary,
-                    fontSize = 15.sp
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (message.type == MessageType.VOICE) {
+                        Icon(
+                            imageVector = Icons.Filled.Mic,
+                            contentDescription = null,
+                            tint = if (isMine) Color.White else ChatStitchTokens.BrandBlue,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    Text(
+                        text = message.content,
+                        color = if (isMine) Color.White else ChatStitchTokens.TextPrimary,
+                        fontSize = 15.sp
+                    )
+                }
                 Spacer(modifier = Modifier.height(4.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
@@ -297,6 +358,131 @@ private fun connectionLabel(state: WsConnectionState): String = when (state) {
     WsConnectionState.CONNECTING -> stringResource(R.string.chat_connection_connecting)
     WsConnectionState.CONNECTED -> stringResource(R.string.chat_connection_connected)
     WsConnectionState.RECONNECTING -> stringResource(R.string.chat_connection_reconnecting)
+}
+
+@Composable
+private fun VoiceComposerBar(
+    voiceState: VoiceUiState,
+    onStopRecording: () -> Unit,
+    onCancelRecording: () -> Unit,
+    onTogglePlayback: () -> Unit,
+    onSendVoice: () -> Unit,
+    onDiscardVoice: () -> Unit
+) {
+    val durationLabel = formatVoiceDuration(voiceState.durationMs)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        when (voiceState.phase) {
+            VoicePhase.RECORDING -> {
+                Icon(
+                    imageVector = Icons.Filled.Mic,
+                    contentDescription = null,
+                    tint = Color(0xFFD32F2F)
+                )
+                Text(
+                    text = stringResource(R.string.chat_voice_recording, durationLabel),
+                    color = ChatStitchTokens.TextPrimary,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedButton(onClick = onCancelRecording) {
+                    Text(stringResource(R.string.chat_voice_cancel))
+                }
+                Button(
+                    onClick = onStopRecording,
+                    colors = ButtonDefaults.buttonColors(containerColor = ChatStitchTokens.BrandBlue)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Stop,
+                        contentDescription = stringResource(R.string.chat_voice_stop),
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(stringResource(R.string.chat_voice_stop))
+                }
+            }
+
+            VoicePhase.RECORDED,
+            VoicePhase.PLAYING,
+            VoicePhase.PAUSED -> {
+                IconButton(onClick = onTogglePlayback) {
+                    Icon(
+                        imageVector = if (voiceState.phase == VoicePhase.PLAYING) {
+                            Icons.Filled.Pause
+                        } else {
+                            Icons.Filled.PlayArrow
+                        },
+                        contentDescription = stringResource(
+                            if (voiceState.phase == VoicePhase.PLAYING) {
+                                R.string.chat_voice_pause
+                            } else {
+                                R.string.chat_voice_play
+                            }
+                        ),
+                        tint = ChatStitchTokens.BrandBlue
+                    )
+                }
+                Text(
+                    text = durationLabel,
+                    color = ChatStitchTokens.TextPrimary,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = onDiscardVoice) {
+                    Icon(
+                        imageVector = Icons.Filled.Delete,
+                        contentDescription = stringResource(R.string.chat_voice_discard),
+                        tint = ChatStitchTokens.TextSecondary
+                    )
+                }
+                Button(
+                    onClick = onSendVoice,
+                    colors = ButtonDefaults.buttonColors(containerColor = ChatStitchTokens.BrandBlue)
+                ) {
+                    Text(stringResource(R.string.chat_send))
+                }
+            }
+
+            VoicePhase.UPLOADING -> {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                Text(
+                    text = stringResource(R.string.chat_voice_uploading),
+                    color = ChatStitchTokens.TextSecondary,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            VoicePhase.ERROR -> {
+                val errorText = if (voiceState.error == VoiceError.MICROPHONE_PERMISSION_REQUIRED) {
+                    stringResource(R.string.chat_voice_permission_needed)
+                } else {
+                    stringResource(R.string.chat_voice_error)
+                }
+                Text(
+                    text = errorText,
+                    color = Color(0xFFB3261E),
+                    fontSize = 13.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = onDiscardVoice) {
+                    Text(stringResource(R.string.chat_voice_cancel))
+                }
+            }
+
+            VoicePhase.IDLE,
+            VoicePhase.SENT -> Unit
+        }
+    }
+}
+
+private fun formatVoiceDuration(durationMs: Long): String {
+    val totalSeconds = durationMs / 1_000L
+    return "%d:%02d".format(totalSeconds / 60L, totalSeconds % 60L)
 }
 
 @Preview(showBackground = true)

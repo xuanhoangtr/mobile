@@ -17,6 +17,16 @@
     <string name="chat_date_yesterday">Yesterday</string>
     <string name="chat_input_hint">Type a message…</string>
     <string name="chat_send">Send</string>
+    <string name="chat_voice_mic">Record voice message</string>
+    <string name="chat_voice_recording">Recording %1$s</string>
+    <string name="chat_voice_stop">Stop</string>
+    <string name="chat_voice_cancel">Cancel</string>
+    <string name="chat_voice_play">Play</string>
+    <string name="chat_voice_pause">Pause</string>
+    <string name="chat_voice_discard">Discard</string>
+    <string name="chat_voice_uploading">Uploading voice…</string>
+    <string name="chat_voice_permission_needed">Microphone permission is required to record voice messages.</string>
+    <string name="chat_voice_error">Could not record or send voice message.</string>
     <string name="chat_status_sending">Sending</string>
     <string name="chat_status_accepted">Sent</string>
     <string name="chat_status_delivered">Delivered</string>

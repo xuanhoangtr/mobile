@@ -17,6 +17,16 @@
     <string name="chat_date_yesterday">Hôm qua</string>
     <string name="chat_input_hint">Nhập tin nhắn…</string>
     <string name="chat_send">Gửi</string>
+    <string name="chat_voice_mic">Ghi âm tin nhắn thoại</string>
+    <string name="chat_voice_recording">Đang ghi âm %1$s</string>
+    <string name="chat_voice_stop">Dừng</string>
+    <string name="chat_voice_cancel">Hủy</string>
+    <string name="chat_voice_play">Nghe</string>
+    <string name="chat_voice_pause">Tạm dừng</string>
+    <string name="chat_voice_discard">Xóa</string>
+    <string name="chat_voice_uploading">Đang gửi ghi âm…</string>
+    <string name="chat_voice_permission_needed">Cần quyền micro để ghi âm tin nhắn thoại.</string>
+    <string name="chat_voice_error">Không thể ghi âm hoặc gửi tin nhắn thoại.</string>
     <string name="chat_status_sending">Đang gửi</string>
     <string name="chat_status_accepted">Đã gửi</string>
     <string name="chat_status_delivered">Đã nhận</string>
