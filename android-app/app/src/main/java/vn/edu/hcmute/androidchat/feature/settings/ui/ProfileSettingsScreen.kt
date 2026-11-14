@@ -35,6 +35,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import vn.edu.hcmute.androidchat.R
 import vn.edu.hcmute.androidchat.feature.auth.viewmodel.AuthUiState
+import vn.edu.hcmute.androidchat.feature.settings.model.AppLanguage
 import vn.edu.hcmute.androidchat.feature.settings.model.AppThemePreference
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -48,6 +49,8 @@ fun ProfileSettingsScreen(
     onBackClick: () -> Unit,
     themePreference: AppThemePreference,
     onThemePreferenceChanged: (AppThemePreference) -> Unit,
+    languagePreference: AppLanguage,
+    onLanguagePreferenceChanged: (AppLanguage) -> Unit,
     modifier: Modifier = Modifier
 ) {
     var confirmLogout by rememberSaveable { mutableStateOf(false) }
@@ -152,6 +155,33 @@ fun ProfileSettingsScreen(
                 }
             }
 
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = stringResource(R.string.profile_language_title),
+                style = MaterialTheme.typography.titleMedium
+            )
+            Column(Modifier.selectableGroup()) {
+                AppLanguage.entries.forEach { language ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = languagePreference == language,
+                                onClick = { onLanguagePreferenceChanged(language) },
+                                role = Role.RadioButton
+                            )
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = languagePreference == language, onClick = null)
+                        Text(
+                            text = stringResource(language.toLanguageStringResource()),
+                            modifier = Modifier.padding(start = 8.dp)
+                        )
+                    }
+                }
+            }
+
             Spacer(Modifier.height(24.dp))
             OutlinedButton(
                 onClick = { confirmLogout = true },
@@ -187,6 +217,12 @@ private fun AppThemePreference.toThemeStringResource(): Int = when (this) {
     AppThemePreference.SYSTEM -> R.string.profile_theme_system
     AppThemePreference.LIGHT -> R.string.profile_theme_light
     AppThemePreference.DARK -> R.string.profile_theme_dark
+}
+
+private fun AppLanguage.toLanguageStringResource(): Int = when (this) {
+    AppLanguage.SYSTEM -> R.string.profile_language_system
+    AppLanguage.VIETNAMESE -> R.string.profile_language_vietnamese
+    AppLanguage.ENGLISH -> R.string.profile_language_english
 }
 
 private fun String.toProfileStringResource(): Int = when (this) {

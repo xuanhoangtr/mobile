@@ -39,6 +39,7 @@ data class ContactsUiState(
     val phoneDiscovery: PhoneDiscoverySettings? = null,
     val hasLoadedConnections: Boolean = false,
     val isLoadingConnections: Boolean = false,
+    val connectionsLoadErrorMessage: String? = null,
     val isUpdatingPhoneDiscovery: Boolean = false,
     val isFriendRequestLoading: Boolean = false,
     val friendRequestInProgressId: String? = null,
@@ -180,6 +181,7 @@ class ContactsViewModel(
                 it.copy(
                     isLoadingConnections = true,
                     hasLoadedConnections = false,
+                    connectionsLoadErrorMessage = null,
                     errorMessage = null
                 )
             }
@@ -205,7 +207,12 @@ class ContactsViewModel(
             } catch (exception: CancellationException) {
                 throw exception
             } catch (exception: Exception) {
-                _uiState.update { it.copy(isLoadingConnections = false, errorMessage = exception.toUiError()) }
+                _uiState.update {
+                    it.copy(
+                        isLoadingConnections = false,
+                        connectionsLoadErrorMessage = exception.toUiError()
+                    )
+                }
             }
         }
     }

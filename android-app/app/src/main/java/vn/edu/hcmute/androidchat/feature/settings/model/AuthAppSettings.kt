@@ -4,6 +4,12 @@ package vn.edu.hcmute.androidchat.feature.settings.model
 enum class AppLanguage { SYSTEM, VIETNAMESE, ENGLISH }
 enum class AppThemePreference { SYSTEM, LIGHT, DARK }
 
+internal fun AppLanguage.localeTagOrNull(): String? = when (this) {
+    AppLanguage.SYSTEM -> null
+    AppLanguage.VIETNAMESE -> "vi"
+    AppLanguage.ENGLISH -> "en"
+}
+
 internal fun AppThemePreference.resolveDarkTheme(systemDarkTheme: Boolean): Boolean = when (this) {
     AppThemePreference.SYSTEM -> systemDarkTheme
     AppThemePreference.LIGHT -> false

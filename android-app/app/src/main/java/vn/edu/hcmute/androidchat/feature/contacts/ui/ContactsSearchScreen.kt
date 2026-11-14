@@ -149,8 +149,9 @@ fun ContactsSearchScreen(
                     )
                 }
             }
-            if (state.errorMessage != null && !state.hasLoadedConnections) {
+            state.connectionsLoadErrorMessage?.let { error ->
                 item {
+                    Text(text = stringResource(error.toContactsStringResource()), color = MaterialTheme.colorScheme.error)
                     TextButton(onClick = viewModel::loadConnections) {
                         Text(stringResource(R.string.contacts_retry_connections))
                     }
@@ -326,7 +327,7 @@ fun ContactsSearchScreen(
 
             item { HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp)) }
             item { SectionTitle(stringResource(R.string.contacts_incoming_requests)) }
-            if (state.incomingRequests.isEmpty()) {
+            if (state.hasLoadedConnections && state.incomingRequests.isEmpty()) {
                 item { Text(stringResource(R.string.contacts_no_incoming_requests)) }
             }
             items(state.incomingRequests, key = { "incoming-${it.id}" }) { request ->
@@ -341,7 +342,7 @@ fun ContactsSearchScreen(
             }
 
             item { SectionTitle(stringResource(R.string.contacts_outgoing_requests)) }
-            if (state.outgoingRequests.isEmpty()) {
+            if (state.hasLoadedConnections && state.outgoingRequests.isEmpty()) {
                 item { Text(stringResource(R.string.contacts_no_outgoing_requests)) }
             }
             items(state.outgoingRequests, key = { "outgoing-${it.id}" }) { request ->
@@ -354,7 +355,7 @@ fun ContactsSearchScreen(
             }
 
             item { SectionTitle(stringResource(R.string.contacts_friends)) }
-            if (state.friends.isEmpty()) {
+            if (state.hasLoadedConnections && state.friends.isEmpty()) {
                 item { Text(stringResource(R.string.contacts_no_friends)) }
             }
             items(state.friends, key = { "friend-${it.id}" }) { user ->
@@ -367,7 +368,7 @@ fun ContactsSearchScreen(
             }
 
             item { SectionTitle(stringResource(R.string.contacts_blocked_users)) }
-            if (state.blockedUsers.isEmpty()) {
+            if (state.hasLoadedConnections && state.blockedUsers.isEmpty()) {
                 item { Text(stringResource(R.string.contacts_no_blocked_users)) }
             }
             items(state.blockedUsers, key = { "blocked-${it.id}" }) { user ->

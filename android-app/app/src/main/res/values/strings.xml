@@ -125,4 +125,8 @@
     <string name="profile_theme_system">Follow device setting</string>
     <string name="profile_theme_light">Light</string>
     <string name="profile_theme_dark">Dark</string>
+    <string name="profile_language_title">App language</string>
+    <string name="profile_language_system">Follow device setting</string>
+    <string name="profile_language_vietnamese">Tiếng Việt</string>
+    <string name="profile_language_english">English</string>
 </resources>

@@ -27,6 +27,7 @@ import vn.edu.hcmute.androidchat.feature.contacts.viewmodel.ContactsViewModel
 import vn.edu.hcmute.androidchat.feature.groups.ui.CreateGroupScreen
 import vn.edu.hcmute.androidchat.feature.groups.viewmodel.CreateGroupViewModel
 import vn.edu.hcmute.androidchat.feature.settings.data.AuthAppSettingsStore
+import vn.edu.hcmute.androidchat.feature.settings.model.AppLanguage
 import vn.edu.hcmute.androidchat.feature.settings.model.AppThemePreference
 import vn.edu.hcmute.androidchat.feature.settings.model.resolveDarkTheme
 import vn.edu.hcmute.androidchat.feature.settings.ui.ProfileSettingsScreen
@@ -56,9 +57,13 @@ class MainActivity : ComponentActivity() {
             val themePreference by appSettingsStore.themePreference.collectAsState(
                 initial = AppThemePreference.SYSTEM
             )
+            val languagePreference by appSettingsStore.languagePreference.collectAsState(
+                initial = AppLanguage.SYSTEM
+            )
             val settingsScope = rememberCoroutineScope()
             AndroidChatTheme(
-                darkTheme = themePreference.resolveDarkTheme(isSystemInDarkTheme())
+                darkTheme = themePreference.resolveDarkTheme(isSystemInDarkTheme()),
+                appLanguage = languagePreference
             ) {
                 var currentRoute by rememberSaveable { mutableStateOf(SkeletonRoute.CHAT_LIST) }
                 val authState by authViewModel.uiState.collectAsState()
@@ -131,6 +136,10 @@ class MainActivity : ComponentActivity() {
                             themePreference = themePreference,
                             onThemePreferenceChanged = { preference ->
                                 settingsScope.launch { appSettingsStore.setThemePreference(preference) }
+                            },
+                            languagePreference = languagePreference,
+                            onLanguagePreferenceChanged = { preference ->
+                                settingsScope.launch { appSettingsStore.setLanguagePreference(preference) }
                             }
                         )
                     }

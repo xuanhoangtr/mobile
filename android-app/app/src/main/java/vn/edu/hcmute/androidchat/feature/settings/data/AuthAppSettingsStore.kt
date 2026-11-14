@@ -8,13 +8,14 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import vn.edu.hcmute.androidchat.feature.settings.model.AppLanguage
 import vn.edu.hcmute.androidchat.feature.settings.model.AppThemePreference
 
 private val Context.authAppSettingsDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "auth_app_settings"
 )
 
-/** Stores non-sensitive AUTH-owned app preferences. Theme defaults to following the device. */
+/** Stores non-sensitive AUTH-owned app preferences. Theme and language default to the device. */
 class AuthAppSettingsStore internal constructor(
     private val dataStore: DataStore<Preferences>
 ) {
@@ -24,16 +25,30 @@ class AuthAppSettingsStore internal constructor(
         preferences[THEME_PREFERENCE_KEY]?.let(::parseThemePreference) ?: AppThemePreference.SYSTEM
     }
 
+    val languagePreference: Flow<AppLanguage> = dataStore.data.map { preferences ->
+        preferences[LANGUAGE_PREFERENCE_KEY]?.let(::parseLanguagePreference) ?: AppLanguage.SYSTEM
+    }
+
     suspend fun setThemePreference(preference: AppThemePreference) {
         dataStore.edit { preferences ->
             preferences[THEME_PREFERENCE_KEY] = preference.name
         }
     }
 
+    suspend fun setLanguagePreference(preference: AppLanguage) {
+        dataStore.edit { preferences ->
+            preferences[LANGUAGE_PREFERENCE_KEY] = preference.name
+        }
+    }
+
     private companion object {
         val THEME_PREFERENCE_KEY = stringPreferencesKey("theme_preference")
+        val LANGUAGE_PREFERENCE_KEY = stringPreferencesKey("language_preference")
 
         fun parseThemePreference(value: String): AppThemePreference =
             AppThemePreference.entries.firstOrNull { it.name == value } ?: AppThemePreference.SYSTEM
+
+        fun parseLanguagePreference(value: String): AppLanguage =
+            AppLanguage.entries.firstOrNull { it.name == value } ?: AppLanguage.SYSTEM
     }
 }

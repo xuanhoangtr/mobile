@@ -110,12 +110,14 @@ class ContactsViewModelTest {
 
         assertFalse(viewModel.uiState.value.hasLoadedConnections)
         assertFalse(viewModel.uiState.value.isLoadingConnections)
-        assertEquals("service_unavailable", viewModel.uiState.value.errorMessage)
+        assertEquals("service_unavailable", viewModel.uiState.value.connectionsLoadErrorMessage)
+        assertNull(viewModel.uiState.value.errorMessage)
         assertTrue(repository.phoneLookupCalls.isEmpty())
 
         viewModel.loadConnections()
 
         assertTrue(viewModel.uiState.value.hasLoadedConnections)
+        assertNull(viewModel.uiState.value.connectionsLoadErrorMessage)
         assertNull(viewModel.uiState.value.errorMessage)
     }
 
