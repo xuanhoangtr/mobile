@@ -42,6 +42,7 @@ import vn.edu.hcmute.androidchat.feature.chat.viewmodel.ChatListViewModel
 import vn.edu.hcmute.androidchat.feature.chat.viewmodel.ChatRoomViewModel
 import vn.edu.hcmute.androidchat.feature.contacts.ui.ContactsSearchScreen
 import vn.edu.hcmute.androidchat.feature.contacts.viewmodel.ContactsViewModel
+import vn.edu.hcmute.androidchat.feature.groups.model.GroupMemberUiModel
 import vn.edu.hcmute.androidchat.feature.groups.ui.CreateGroupScreen
 import vn.edu.hcmute.androidchat.feature.groups.viewmodel.CreateGroupViewModel
 import vn.edu.hcmute.androidchat.feature.media.data.AndroidMediaSource
@@ -121,7 +122,17 @@ class MainActivity : ComponentActivity() {
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
                 val uploadService = HttpMediaUploadService(
                     endpoint = URL("$backendBaseUrl/media/upload"),
-                    accessToken = { cachedAccessToken.orEmpty() }
+                    accessToken = {
+                        kotlinx.coroutines.runBlocking {
+                            val fresh = authFeature.tokenProvider.accessToken()
+                            if (!fresh.isNullOrBlank()) {
+                                cachedAccessToken = fresh
+                                fresh
+                            } else {
+                                cachedAccessToken.orEmpty()
+                            }
+                        }
+                    }
                 )
                 val repository = StreamMediaRepository(
                     source = AndroidMediaSource(applicationContext.contentResolver),
@@ -162,6 +173,7 @@ class MainActivity : ComponentActivity() {
                         if (!token.isNullOrBlank()) {
                             chatTransport.connect(toWebSocketUrl(backendBaseUrl), token)
                             chatListViewModel.loadConversations(backendBaseUrl, token)
+                            contactsViewModel.loadConnections()
                         }
                     }
                 }
@@ -184,7 +196,10 @@ class MainActivity : ComponentActivity() {
                                     )
                                     currentRoute = SkeletonRoute.CHAT_ROOM
                                 },
-                                onCreateGroupClick = { currentRoute = SkeletonRoute.CREATE_GROUP },
+                                onCreateGroupClick = {
+                                    contactsViewModel.loadConnections()
+                                    currentRoute = SkeletonRoute.CREATE_GROUP
+                                },
                                 onContactsClick = { currentRoute = SkeletonRoute.CONTACTS },
                                 onProfileClick = { currentRoute = SkeletonRoute.PROFILE_SETTINGS }
                             )
@@ -222,6 +237,17 @@ class MainActivity : ComponentActivity() {
 
                         SkeletonRoute.CREATE_GROUP -> {
                             val groupState by createGroupViewModel.uiState.collectAsState()
+                            val contactsState by contactsViewModel.uiState.collectAsState()
+                            LaunchedEffect(contactsState.friends) {
+                                createGroupViewModel.setContacts(
+                                    contactsState.friends.map {
+                                        GroupMemberUiModel(
+                                            userId = it.id,
+                                            displayName = it.displayName
+                                        )
+                                    }
+                                )
+                            }
                             val currentUserId = requireNotNull(authState.authenticatedUser).user.id
                             CreateGroupScreen(
                                 uiState = groupState,
