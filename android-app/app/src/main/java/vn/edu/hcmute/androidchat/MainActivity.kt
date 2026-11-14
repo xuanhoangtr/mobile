@@ -3,6 +3,7 @@ package vn.edu.hcmute.androidchat
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -181,6 +182,16 @@ class MainActivity : ComponentActivity() {
                 if (authState.authenticatedUser == null) {
                     AuthEntryScreen(viewModel = authViewModel)
                 } else {
+                    BackHandler(enabled = currentRoute != SkeletonRoute.CHAT_LIST) {
+                        currentRoute = when (currentRoute) {
+                            SkeletonRoute.MEDIA_PICKER -> SkeletonRoute.CHAT_ROOM
+                            SkeletonRoute.CHAT_ROOM,
+                            SkeletonRoute.CREATE_GROUP,
+                            SkeletonRoute.CONTACTS,
+                            SkeletonRoute.PROFILE_SETTINGS -> SkeletonRoute.CHAT_LIST
+                            SkeletonRoute.CHAT_LIST -> SkeletonRoute.CHAT_LIST
+                        }
+                    }
                     when (currentRoute) {
                         SkeletonRoute.CHAT_LIST -> {
                             val listState by chatListViewModel.uiState.collectAsState()
