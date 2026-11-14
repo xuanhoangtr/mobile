@@ -41,6 +41,7 @@ import vn.edu.hcmute.androidchat.backend.common.DatabaseUnavailableException
 import vn.edu.hcmute.androidchat.backend.common.HealthResponse
 import vn.edu.hcmute.androidchat.backend.common.configureJwtAuth
 import vn.edu.hcmute.androidchat.backend.groups.registerGroupRoutes
+import vn.edu.hcmute.androidchat.backend.media.configureMediaFoundation
 
 fun main() {
     val config = AppConfig.fromEnv()
@@ -109,6 +110,7 @@ fun Application.module(
     val authService = AuthService(authRepositoryOverride ?: PostgresAuthRepository(dbManager), config)
     configureJwtAuth(config)
     installAuthSessionValidation(config, authService)
+    configureMediaFoundation(config)
 
     routing {
         get("/health") {

@@ -99,12 +99,14 @@ https://stitch.withgoogle.com/projects/11111923560284449667
 
 - **AUTH (Đinh Công Huy):** Đăng ký/đăng nhập email, session JWT/refresh có thể thu hồi, tìm kiếm/tra cứu SĐT, bạn bè, chặn, cài đặt ngôn ngữ VI/EN và theme. OTP provider thực và rate limiting tổng quát chưa triển khai.
 - **CHAT (Xuân Hoàng):** Hoàn thiện backend Ktor REST/WebSocket, SQL migrations, Android UI/ViewModels, `SqliteChatLocalCache` và bộ test JVM/Ktor D01–D40.
+- **MEDIA (Nguyễn Quang Huy):** Hoàn thiện picker/upload/download boundary, voice, batch attachment, sticker, vị trí, wallpaper và call signaling/state POC ở mức local source/build/test. WebRTC media thật, FCM provider, TURN/NAT, group media chưa claim hoàn thành (xem `docs/media-foundation.md`).
 - **Tích hợp & kiểm thử thực địa:** Cần chạy PostgreSQL live với các file migration và kiểm thử chéo trên thiết bị Android thật.
-
 ## 9. Nguồn tham khảo và AI
 
 Nhóm sử dụng các tài liệu và repository công khai
 để nghiên cứu kỹ thuật.
 
-AI hỗ trợ tạo và rà soát một phần mã AUTH, kiểm thử, tài liệu bàn giao, phần báo cáo và slide AUTH trong nhánh `feature/auth-email`.
-Đinh Công Huy cần review, hiểu và giải thích phần đóng góp trước khi tích hợp theo rubric. Slide và báo cáo AUTH là phần bàn giao riêng, chưa phải báo cáo hoặc deck cuối cùng của cả nhóm.
+Việc sử dụng công cụ AI phải được khai báo trong README hoặc báo cáo theo rubric. Mỗi thành viên chịu trách nhiệm hiểu và giải thích mã nguồn mình đóng góp:
+- **AUTH (`feature/auth-email`):** AI hỗ trợ tạo và rà soát một phần mã AUTH, kiểm thử, tài liệu bàn giao, báo cáo và slide AUTH.
+- **MEDIA (`feature/media-foundation`):** Source MEDIA Android/backend, MEDIA tests và tài liệu `docs/media-foundation.md` được xây dựng với hỗ trợ AI/Copilot trong task MEDIA D01–D40.
+- **CHAT (`feature/chat-realtime`):** AI hỗ trợ triển khai và rà soát backend/Android CHAT, bộ test D01–D40 và tài liệu `docs/chat-d31-d35-report.md`, `docs/chat-d36-d40-handover.md`.
