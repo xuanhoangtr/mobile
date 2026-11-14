@@ -21,59 +21,67 @@ import vn.edu.hcmute.androidchat.backend.common.WsErrorPayload
 import vn.edu.hcmute.androidchat.backend.common.authenticatedUserId
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicLong
 
 private val wsLogger = LoggerFactory.getLogger("ChatWebSocket")
 
 /**
- * In-memory skeleton registry for active user WebSocket connections and
- * temporary clientMessageId deduplication before PostgreSQL persistence is wired in D04.
+ * Tracks active WebSocket sessions per authenticated user ID for realtime delivery.
  */
-class ChatWsSkeletonState {
+class ChatSessionRegistry {
     private val sessionsByUser = ConcurrentHashMap<Long, MutableSet<DefaultWebSocketServerSession>>()
-    private val nextMessageId = AtomicLong(1L)
-    private val seenClientMessages = ConcurrentHashMap<String, MessageAckPayload>()
 
-    fun register(userId: Long, session: DefaultWebSocketServerSession) {
-        sessionsByUser.computeIfAbsent(userId) { ConcurrentHashMap.newKeySet() }.add(session)
+    fun register(userId: Long, session: DefaultWebSocketServerSession): Boolean {
+        val set = sessionsByUser.computeIfAbsent(userId) { ConcurrentHashMap.newKeySet() }
+        val wasEmpty = set.isEmpty()
+        set.add(session)
+        return wasEmpty
     }
 
-    fun unregister(userId: Long, session: DefaultWebSocketServerSession) {
-        val set = sessionsByUser[userId] ?: return
+    fun unregister(userId: Long, session: DefaultWebSocketServerSession): Boolean {
+        val set = sessionsByUser[userId] ?: return false
         set.remove(session)
         if (set.isEmpty()) {
             sessionsByUser.remove(userId, set)
+            return true
         }
+        return false
     }
 
-    fun recordMessageSkeleton(senderId: Long, payload: MessageSendPayload, nowIso: String): Pair<MessageAckPayload, Boolean> {
-        val dedupKey = "$senderId:${payload.clientMessageId}"
-        val existing = seenClientMessages[dedupKey]
-        if (existing != null) {
-            return existing.copy(status = "DUPLICATE") to true
-        }
-        val assignedId = nextMessageId.getAndIncrement()
-        val ack = MessageAckPayload(
-            clientMessageId = payload.clientMessageId,
-            conversationId = payload.conversationId,
-            messageId = assignedId,
-            status = "ACCEPTED",
-            serverCreatedAt = nowIso
+    suspend inline fun <reified T> broadcastToUsers(
+        userIds: Set<Long>,
+        type: String,
+        requestId: String?,
+        payload: T
+    ) {
+        val frameText = AppJson.encodeToString(
+            WsEnvelope(
+                type = type,
+                requestId = requestId,
+                timestamp = Instant.now().toString(),
+                payload = AppJson.encodeToJsonElement(payload)
+            )
         )
-        val raced = seenClientMessages.putIfAbsent(dedupKey, ack)
-        return if (raced != null) {
-            raced.copy(status = "DUPLICATE") to true
-        } else {
-            ack to false
+        sendFrameToUsers(userIds, frameText)
+    }
+
+    suspend fun sendFrameToUsers(userIds: Set<Long>, frameText: String) {
+        for (targetUserId in userIds) {
+            val sessions = sessionsByUser[targetUserId].orEmpty()
+            for (session in sessions) {
+                runCatching { session.send(Frame.Text(frameText)) }
+            }
         }
     }
 }
 
 /**
- * Registers authenticated `/ws/chat` WebSocket skeleton supporting
- * `message.send`, `message.ack`, `message.created`, `typing`, `presence`, and `receipt` envelopes.
+ * Registers authenticated `/ws/chat` WebSocket routes supporting
+ * `message.send`, `message.ack`, `message.created`, `typing`, `presence`, and `receipt`.
  */
-fun Route.registerChatWebSocketRoutes(state: ChatWsSkeletonState = ChatWsSkeletonState()) {
+fun Route.registerChatWebSocketRoutes(
+    repository: ChatRepository,
+    sessions: ChatSessionRegistry = ChatSessionRegistry()
+) {
     authenticate(AUTH_JWT_NAME) {
         webSocket("/ws/chat") {
             val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
@@ -82,30 +90,55 @@ fun Route.registerChatWebSocketRoutes(state: ChatWsSkeletonState = ChatWsSkeleto
                 return@webSocket
             }
 
-            state.register(userId, this)
+            val isFirstSession = sessions.register(userId, this)
             wsLogger.info("WebSocket connected for userId={}", userId)
 
             try {
-                sendEvent(
-                    type = "presence",
-                    requestId = null,
-                    payload = PresencePayload(
-                        userId = userId,
-                        status = "ONLINE",
-                        lastSeenAt = Instant.now().toString()
-                    )
+                val connectedAt = Instant.now().toString()
+                val onlinePresence = PresencePayload(
+                    userId = userId,
+                    status = "ONLINE",
+                    lastSeenAt = connectedAt
                 )
+                sendEvent(type = "presence", requestId = null, payload = onlinePresence)
+                if (isFirstSession) {
+                    val peers = repository.peerUserIdsFor(userId)
+                    if (peers.isNotEmpty()) {
+                        sessions.broadcastToUsers(
+                            userIds = peers,
+                            type = "presence",
+                            requestId = null,
+                            payload = onlinePresence
+                        )
+                    }
+                }
 
                 for (frame in incoming) {
                     if (frame !is Frame.Text) continue
                     handleIncomingTextFrame(
                         rawText = frame.readText(),
                         userId = userId,
-                        state = state
+                        repository = repository,
+                        sessions = sessions
                     )
                 }
             } finally {
-                state.unregister(userId, this)
+                val isLastSession = sessions.unregister(userId, this)
+                if (isLastSession) {
+                    val peers = runCatching { repository.peerUserIdsFor(userId) }.getOrDefault(emptySet())
+                    if (peers.isNotEmpty()) {
+                        sessions.broadcastToUsers(
+                            userIds = peers,
+                            type = "presence",
+                            requestId = null,
+                            payload = PresencePayload(
+                                userId = userId,
+                                status = "OFFLINE",
+                                lastSeenAt = Instant.now().toString()
+                            )
+                        )
+                    }
+                }
                 wsLogger.info("WebSocket disconnected for userId={}", userId)
             }
         }
@@ -115,7 +148,8 @@ fun Route.registerChatWebSocketRoutes(state: ChatWsSkeletonState = ChatWsSkeleto
 private suspend fun DefaultWebSocketServerSession.handleIncomingTextFrame(
     rawText: String,
     userId: Long,
-    state: ChatWsSkeletonState
+    repository: ChatRepository,
+    sessions: ChatSessionRegistry
 ) {
     val envelope = try {
         AppJson.decodeFromString<WsEnvelope>(rawText)
@@ -126,9 +160,10 @@ private suspend fun DefaultWebSocketServerSession.handleIncomingTextFrame(
 
     val nowIso = Instant.now().toString()
     when (envelope.type) {
-        "message.send" -> handleMessageSend(envelope, userId, nowIso, state)
-        "typing" -> handleTyping(envelope, userId)
-        "receipt" -> handleReceipt(envelope, userId, nowIso)
+        "message.send" -> handleMessageSend(envelope, userId, nowIso, repository, sessions)
+        "typing" -> handleTyping(envelope, userId, repository, sessions)
+        "receipt" -> handleReceipt(envelope, userId, nowIso, repository, sessions)
+        "call.signal" -> handleCallSignal(envelope, userId, repository, sessions)
         else -> sendError(
             requestId = envelope.requestId,
             code = "UNSUPPORTED_EVENT",
@@ -141,7 +176,8 @@ private suspend fun DefaultWebSocketServerSession.handleMessageSend(
     envelope: WsEnvelope,
     userId: Long,
     nowIso: String,
-    state: ChatWsSkeletonState
+    repository: ChatRepository,
+    sessions: ChatSessionRegistry
 ) {
     val payload = runCatching {
         AppJson.decodeFromJsonElement<MessageSendPayload>(envelope.payload)
@@ -152,33 +188,29 @@ private suspend fun DefaultWebSocketServerSession.handleMessageSend(
         return
     }
 
-    val (ack, isDuplicate) = state.recordMessageSkeleton(userId, payload, nowIso)
-    sendEvent(type = "message.ack", requestId = envelope.requestId, payload = ack)
-
-    if (!isDuplicate) {
-        // Skeleton echoes message.created to sender session; multi-member broadcast moves to D04 repository.
-        sendEvent(
-            type = "message.created",
-            requestId = null,
-            payload = MessageDto(
-                id = ack.messageId,
-                clientMessageId = payload.clientMessageId,
-                conversationId = payload.conversationId,
-                senderId = userId,
-                type = payload.type,
-                content = payload.content,
-                mediaRef = payload.mediaRef,
-                replyToId = payload.replyToId,
-                metadata = payload.metadata,
-                createdAt = ack.serverCreatedAt
-            )
-        )
+    val result = repository.saveMessage(userId, payload, nowIso)
+    if (!result.isMember) {
+        sendError(envelope.requestId, "FORBIDDEN", "User is not an active member of this conversation")
+        return
     }
+
+    sendEvent(type = "message.ack", requestId = envelope.requestId, payload = result.ack)
+
+    val created = result.created ?: return
+    val recipients = repository.activeMemberIds(payload.conversationId).ifEmpty { setOf(userId) }
+    sessions.broadcastToUsers(
+        userIds = recipients,
+        type = "message.created",
+        requestId = null,
+        payload = created
+    )
 }
 
 private suspend fun DefaultWebSocketServerSession.handleTyping(
     envelope: WsEnvelope,
-    userId: Long
+    userId: Long,
+    repository: ChatRepository,
+    sessions: ChatSessionRegistry
 ) {
     val payload = runCatching {
         AppJson.decodeFromJsonElement<TypingPayload>(envelope.payload)
@@ -189,7 +221,15 @@ private suspend fun DefaultWebSocketServerSession.handleTyping(
         return
     }
 
-    sendEvent(
+    val members = repository.activeMemberIds(payload.conversationId)
+    if (members.isNotEmpty() && userId !in members) {
+        sendError(envelope.requestId, "FORBIDDEN", "User is not an active member of this conversation")
+        return
+    }
+
+    val recipients = members.ifEmpty { setOf(userId) }
+    sessions.broadcastToUsers(
+        userIds = recipients,
         type = "typing",
         requestId = envelope.requestId,
         payload = payload.copy(userId = userId)
@@ -199,7 +239,9 @@ private suspend fun DefaultWebSocketServerSession.handleTyping(
 private suspend fun DefaultWebSocketServerSession.handleReceipt(
     envelope: WsEnvelope,
     userId: Long,
-    nowIso: String
+    nowIso: String,
+    repository: ChatRepository,
+    sessions: ChatSessionRegistry
 ) {
     val payload = runCatching {
         AppJson.decodeFromJsonElement<ReceiptPayload>(envelope.payload)
@@ -210,10 +252,66 @@ private suspend fun DefaultWebSocketServerSession.handleReceipt(
         return
     }
 
-    sendEvent(
+    val members = repository.activeMemberIds(payload.conversationId)
+    if (members.isNotEmpty() && userId !in members) {
+        sendError(envelope.requestId, "FORBIDDEN", "User is not an active member of this conversation")
+        return
+    }
+
+    val saved = when (val res = repository.saveReceipt(userId, payload.conversationId, payload.messageId, payload.status, nowIso)) {
+        is GroupOpResult.Ok -> res.value
+        is GroupOpResult.Err -> {
+            sendError(envelope.requestId, res.code, res.message)
+            return
+        }
+    }
+
+    val recipients = members.ifEmpty { setOf(userId) }
+    sessions.broadcastToUsers(
+        userIds = recipients,
         type = "receipt",
         requestId = envelope.requestId,
-        payload = payload.copy(userId = userId, at = nowIso)
+        payload = saved
+    )
+}
+
+private suspend fun DefaultWebSocketServerSession.handleCallSignal(
+    envelope: WsEnvelope,
+    userId: Long,
+    repository: ChatRepository,
+    sessions: ChatSessionRegistry
+) {
+    val payload = runCatching {
+        AppJson.decodeFromJsonElement<CallSignalPayload>(envelope.payload)
+    }.getOrNull() ?: return sendError(envelope.requestId, "VALIDATION_ERROR", "Invalid call.signal payload")
+
+    if (payload.conversationId <= 0L || payload.callId.isBlank() || payload.signalType.isBlank()) {
+        sendError(envelope.requestId, "VALIDATION_ERROR", "conversationId, callId, and signalType are required")
+        return
+    }
+
+    val members = repository.activeMemberIds(payload.conversationId)
+    if (members.isNotEmpty() && userId !in members) {
+        sendError(envelope.requestId, "FORBIDDEN", "User is not an active member of this conversation")
+        return
+    }
+
+    val targets = when {
+        payload.targetUserId != null -> {
+            if (members.isNotEmpty() && payload.targetUserId !in members) {
+                sendError(envelope.requestId, "FORBIDDEN", "Target user is not in this conversation")
+                return
+            }
+            setOf(payload.targetUserId)
+        }
+        else -> (members - userId).ifEmpty { setOf(userId) }
+    }
+
+    sessions.broadcastToUsers(
+        userIds = targets,
+        type = "call.signal",
+        requestId = envelope.requestId,
+        payload = payload.copy(fromUserId = userId)
     )
 }
 

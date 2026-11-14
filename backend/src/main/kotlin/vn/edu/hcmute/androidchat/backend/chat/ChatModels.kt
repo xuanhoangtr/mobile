@@ -5,6 +5,36 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 
 @Serializable
+data class CreateDirectConversationRequest(
+    val targetUserId: Long
+)
+
+@Serializable
+data class CreateGroupConversationRequest(
+    val name: String,
+    val memberIds: List<Long>
+)
+
+@Serializable
+data class AddGroupMembersRequest(
+    val userIds: List<Long>
+)
+
+@Serializable
+data class UpdateMemberRoleRequest(
+    val role: String
+)
+
+@Serializable
+data class ConversationMemberDto(
+    val conversationId: Long,
+    val userId: Long,
+    val role: String,
+    val status: String,
+    val joinedAt: String
+)
+
+@Serializable
 data class ConversationSummaryDto(
     val id: Long,
     val type: String,
@@ -26,10 +56,12 @@ data class MessageDto(
     val content: String? = null,
     val mediaRef: Long? = null,
     val replyToId: Long? = null,
+    val forwardedFromId: Long? = null,
     val metadata: JsonObject = buildJsonObject {},
     val createdAt: String,
     val editedAt: String? = null,
-    val deletedAt: String? = null
+    val deletedAt: String? = null,
+    val reactions: Map<String, List<Long>> = emptyMap()
 )
 
 @Serializable
@@ -40,7 +72,66 @@ data class MessageSendPayload(
     val content: String? = null,
     val mediaRef: Long? = null,
     val replyToId: Long? = null,
+    val forwardedFromId: Long? = null,
     val metadata: JsonObject = buildJsonObject {}
+)
+
+@Serializable
+data class EditMessageRequest(
+    val content: String
+)
+
+@Serializable
+data class ForwardMessageRequest(
+    val targetConversationId: Long,
+    val clientMessageId: String
+)
+
+@Serializable
+data class ToggleReactionRequest(
+    val emoji: String
+)
+
+@Serializable
+data class MessageUpdatedPayload(
+    val conversationId: Long,
+    val messageId: Long,
+    val content: String? = null,
+    val editedAt: String? = null,
+    val deletedAt: String? = null
+)
+
+@Serializable
+data class ReactionUpdatedPayload(
+    val conversationId: Long,
+    val messageId: Long,
+    val userId: Long,
+    val emoji: String,
+    val added: Boolean,
+    val counts: Map<String, Int>
+)
+
+@Serializable
+data class PinConversationRequest(
+    val pinned: Boolean
+)
+
+@Serializable
+data class PinnedMessageDto(
+    val conversationId: Long,
+    val messageId: Long,
+    val pinnedBy: Long,
+    val pinnedAt: String
+)
+
+@Serializable
+data class CallSignalPayload(
+    val conversationId: Long,
+    val callId: String,
+    val signalType: String,
+    val fromUserId: Long? = null,
+    val targetUserId: Long? = null,
+    val sdpOrCandidate: String? = null
 )
 
 @Serializable

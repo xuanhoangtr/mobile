@@ -4,13 +4,17 @@ import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.slf4j.LoggerFactory
 import java.sql.Connection
+import javax.sql.DataSource
 
 /**
  * Manages optional PostgreSQL HikariCP connection pool for the backend skeleton.
  */
 class DatabaseManager(private val config: AppConfig) : AutoCloseable {
     private val logger = LoggerFactory.getLogger(DatabaseManager::class.java)
-    private var dataSource: HikariDataSource? = null
+    private var hikariDataSource: HikariDataSource? = null
+
+    val dataSource: DataSource?
+        get() = hikariDataSource
 
     fun initIfConfigured() {
         val jdbcUrl = config.dbUrl ?: run {
@@ -29,12 +33,12 @@ class DatabaseManager(private val config: AppConfig) : AutoCloseable {
             initializationFailTimeout = -1 // Allow app startup even if DB boots slightly later
         }
 
-        dataSource = HikariDataSource(hikariConfig)
+        hikariDataSource = HikariDataSource(hikariConfig)
         logger.info("PostgreSQL HikariDataSource initialized.")
     }
 
     fun healthStatus(): String {
-        val ds = dataSource ?: return "NOT_CONFIGURED"
+        val ds = hikariDataSource ?: return "NOT_CONFIGURED"
         return try {
             ds.connection.use { conn ->
                 if (conn.isValid(2)) "UP" else "DOWN"
@@ -52,8 +56,8 @@ class DatabaseManager(private val config: AppConfig) : AutoCloseable {
     }
 
     override fun close() {
-        dataSource?.close()
-        dataSource = null
+        hikariDataSource?.close()
+        hikariDataSource = null
     }
 }
 

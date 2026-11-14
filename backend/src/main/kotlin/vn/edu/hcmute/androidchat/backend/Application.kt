@@ -26,6 +26,10 @@ import vn.edu.hcmute.androidchat.backend.auth.AuthService
 import vn.edu.hcmute.androidchat.backend.auth.PostgresAuthRepository
 import vn.edu.hcmute.androidchat.backend.auth.installAuthSessionValidation
 import vn.edu.hcmute.androidchat.backend.auth.registerAuthAndUserRoutes
+import vn.edu.hcmute.androidchat.backend.chat.ChatRepository
+import vn.edu.hcmute.androidchat.backend.chat.ChatSessionRegistry
+import vn.edu.hcmute.androidchat.backend.chat.InMemoryChatRepository
+import vn.edu.hcmute.androidchat.backend.chat.PostgresChatRepository
 import vn.edu.hcmute.androidchat.backend.chat.registerChatRoutes
 import vn.edu.hcmute.androidchat.backend.chat.registerChatWebSocketRoutes
 import vn.edu.hcmute.androidchat.backend.common.ApiErrorDetail
@@ -46,12 +50,15 @@ fun main() {
 }
 
 /** Configures Ktor plugins, JWT authentication, health route, and module routing. */
-fun Application.module(config: AppConfig = AppConfig.fromEnv()) {
-    module(config, authRepositoryOverride = null)
-}
-
-internal fun Application.module(config: AppConfig, authRepositoryOverride: AuthRepository?) {
+fun Application.module(
+    config: AppConfig = AppConfig.fromEnv(),
+    authRepositoryOverride: AuthRepository? = null,
+    chatRepositoryOverride: ChatRepository? = null
+) {
     val dbManager = DatabaseManager(config).apply { initIfConfigured() }
+    val chatRepository = chatRepositoryOverride
+        ?: dbManager.dataSource?.let { PostgresChatRepository(it) }
+        ?: InMemoryChatRepository()
     monitor.subscribe(ApplicationStopped) {
         dbManager.close()
     }
@@ -116,8 +123,9 @@ internal fun Application.module(config: AppConfig, authRepositoryOverride: AuthR
             )
         }
 
-        registerChatRoutes()
-        registerChatWebSocketRoutes()
+        val chatSessions = ChatSessionRegistry()
+        registerChatRoutes(chatRepository, chatSessions)
+        registerChatWebSocketRoutes(chatRepository, chatSessions)
         registerGroupRoutes()
         registerAuthAndUserRoutes(authService)
     }
