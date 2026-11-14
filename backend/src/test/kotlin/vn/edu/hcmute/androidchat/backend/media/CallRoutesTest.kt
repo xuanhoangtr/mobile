@@ -3,13 +3,16 @@ package vn.edu.hcmute.androidchat.backend.media
 import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
 import io.ktor.client.request.*
-import io.ktor.client.call.body
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.*
 import io.ktor.server.testing.*
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import vn.edu.hcmute.androidchat.backend.common.AppConfig
+import vn.edu.hcmute.androidchat.backend.common.AppJson
 import vn.edu.hcmute.androidchat.backend.module
+import io.ktor.server.routing.routing
+import kotlinx.serialization.json.jsonObject
 import java.nio.file.Files
 import java.time.Instant
 import kotlin.test.Test
@@ -24,11 +27,7 @@ class CallRoutesTest {
         try {
             application {
                 module(config)
-                configureMediaFoundation(
-                    config,
-                    MediaService(LocalMediaStorage(root)),
-                    callSessionRegistry = CallSessionRegistry()
-                )
+                routing { registerCallRoutes(CallSessionRegistry()) }
             }
             val caller = token(7)
             val callee = token(8)
@@ -38,14 +37,14 @@ class CallRoutesTest {
                 setBody("""{"calleeId":8,"media":"audio"}""")
             }
             assertEquals(HttpStatusCode.Created, invite.status)
-            val callId = invite.body<JsonObject>()["callId"]!!.jsonPrimitive.content
+            val callId = invite.bodyAsText().parseJsonObject()["callId"]!!.jsonPrimitive.content
             val answer = client.post("/calls/answer") {
                 bearerAuth(callee)
                 contentType(ContentType.Application.Json)
                 setBody("""{"callId":"$callId"}""")
             }
             assertEquals(HttpStatusCode.OK, answer.status)
-            assertEquals("ACCEPTED", answer.body<JsonObject>()["state"]!!.jsonPrimitive.content)
+            assertEquals("ACCEPTED", answer.bodyAsText().parseJsonObject()["state"]!!.jsonPrimitive.content)
             assertEquals(HttpStatusCode.OK, client.post("/calls/end") {
                 bearerAuth(caller)
                 contentType(ContentType.Application.Json)
@@ -64,18 +63,14 @@ class CallRoutesTest {
         try {
             application {
                 module(config)
-                configureMediaFoundation(
-                    config,
-                    MediaService(LocalMediaStorage(root)),
-                    callSessionRegistry = CallSessionRegistry()
-                )
+                routing { registerCallRoutes(CallSessionRegistry()) }
             }
             val invite = client.post("/calls/invite") {
                 bearerAuth(token(7))
                 contentType(ContentType.Application.Json)
                 setBody("""{"calleeId":8,"media":"video"}""")
             }
-            val callId = invite.body<JsonObject>()["callId"]!!.jsonPrimitive.content
+            val callId = invite.bodyAsText().parseJsonObject()["callId"]!!.jsonPrimitive.content
             val response = client.post("/calls/answer") {
                 bearerAuth(token(9))
                 contentType(ContentType.Application.Json)
@@ -93,4 +88,7 @@ class CallRoutesTest {
         JWT.create().withIssuer(config.jwtIssuer).withAudience(config.jwtAudience)
             .withSubject(userId.toString()).withExpiresAt(Instant.now().plusSeconds(300))
             .sign(Algorithm.HMAC256(config.jwtSecret))
+
+    private fun String.parseJsonObject(): JsonObject =
+        AppJson.parseToJsonElement(this).jsonObject
 }
