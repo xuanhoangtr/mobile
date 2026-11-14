@@ -35,6 +35,20 @@ class DatabaseManager(private val config: AppConfig) : AutoCloseable {
 
         hikariDataSource = HikariDataSource(hikariConfig)
         logger.info("PostgreSQL HikariDataSource initialized.")
+        ensureSchemaUpgrades()
+    }
+
+    private fun ensureSchemaUpgrades() {
+        val ds = hikariDataSource ?: return
+        try {
+            ds.connection.use { conn ->
+                conn.createStatement().use { stmt ->
+                    stmt.execute("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ")
+                }
+            }
+        } catch (ex: Exception) {
+            logger.warn("Skipping idempotent startup schema upgrade: {}", ex.message)
+        }
     }
 
     fun healthStatus(): String {
