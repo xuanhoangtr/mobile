@@ -5,6 +5,7 @@
     <string name="media_empty_description">Choose a photo, video or document from your device.</string>
     <string name="media_kind_photos">Photos</string>
     <string name="media_kind_videos">Videos</string>
+    <string name="media_kind_audio">Audio</string>
     <string name="media_kind_documents">Documents</string>
     <string name="media_supported_summary">JPEG, PNG, MP4, PDF or TXT · Up to 10 MB</string>
     <string name="media_preview_heading">Review attachment</string>
@@ -15,13 +16,13 @@
     <string name="media_progress_detail">%1$s of %2$s processed</string>
     <string name="media_progress_unknown_total">%1$s processed</string>
     <string name="media_uploaded_action">Uploaded</string>
-    <string name="media_foundation_notice">Temporary UI. Upload needs the shared authenticated service; this screen does not send a chat message.</string>
+    <string name="media_foundation_notice">Select a file to upload and attach to your conversation.</string>
     <string name="media_choose">Choose image, video or file</string>
     <string name="media_bytes">%1$d bytes</string>
     <string name="media_bytes_sent">%1$d bytes read for upload</string>
-    <string name="media_size_unknown">Size unknown (stream limit still applies)</string>
-    <string name="media_uri_persisted">Read permission retained; provider access may still be revoked.</string>
-    <string name="media_uri_temporary">Temporary URI access; choose again if access is lost.</string>
+    <string name="media_size_unknown">Size unknown</string>
+    <string name="media_uri_persisted">File is ready to upload.</string>
+    <string name="media_uri_temporary">Temporary file access; select again if access expires.</string>
     <string name="media_open_preview">Open preview</string>
     <string name="media_preview_description">Selected media preview</string>
     <string name="media_no_selection">No file selected.</string>
@@ -30,13 +31,13 @@
     <string name="media_upload">Upload</string>
     <string name="media_clear">Remove selection</string>
     <string name="media_cancelled">Cancelled</string>
-    <string name="media_uploaded">Uploaded to the server. This file has not been sent in a chat message.</string>
-    <string name="media_error_uri">Cannot read this URI. Select the document again.</string>
-    <string name="media_error_type">Supported: JPEG, PNG, MP4, PDF and UTF-8 TXT.</string>
-    <string name="media_error_size">File exceeds the 10 MiB development limit.</string>
+    <string name="media_uploaded">File uploaded.</string>
+    <string name="media_error_uri">Cannot read this file. Please select it again.</string>
+    <string name="media_error_type">Supported: JPEG, PNG, MP4, PDF and TXT.</string>
+    <string name="media_error_size">File exceeds the 10 MB limit.</string>
     <string name="media_error_empty">Empty files are not supported.</string>
-    <string name="media_error_upload">Upload failed. Retry when the service is available.</string>
-    <string name="media_error_blocked">Upload service is not connected. AUTH/API integration is pending.</string>
+    <string name="media_error_upload">Upload failed. Please try again.</string>
+    <string name="media_error_blocked">Upload is currently unavailable. Please try again later.</string>
     <string name="media_error_preview">Preview is unavailable for this file. You can still upload it.</string>
     <string name="media_error_picker_unavailable">The system picker could not be opened. Check that a picker app is available and try again.</string>
 </resources>

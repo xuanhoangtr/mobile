@@ -30,9 +30,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Audiotrack
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
@@ -281,28 +288,28 @@ private fun EmptyPickerContent(
         ) {
             MediaKindTile(
                 label = stringResource(R.string.media_kind_photos),
-                mark = "▧",
+                icon = Icons.Outlined.Image,
                 enabled = enabled,
                 onClick = { onChooseClick(MediaPickerKind.PHOTO) },
                 modifier = Modifier.weight(1f)
             )
             MediaKindTile(
                 label = stringResource(R.string.media_kind_videos),
-                mark = "▶",
+                icon = Icons.Outlined.Videocam,
                 enabled = enabled,
                 onClick = { onChooseClick(MediaPickerKind.VIDEO) },
                 modifier = Modifier.weight(1f)
             )
             MediaKindTile(
-                label = "Audio",
-                mark = "♫",
+                label = stringResource(R.string.media_kind_audio),
+                icon = Icons.Outlined.Audiotrack,
                 enabled = enabled,
                 onClick = { onChooseClick(MediaPickerKind.AUDIO) },
                 modifier = Modifier.weight(1f)
             )
             MediaKindTile(
                 label = stringResource(R.string.media_kind_documents),
-                mark = "PDF",
+                icon = Icons.Outlined.Description,
                 enabled = enabled,
                 onClick = { onChooseClick(MediaPickerKind.DOCUMENT) },
                 modifier = Modifier.weight(1f)
@@ -315,7 +322,7 @@ private fun EmptyPickerContent(
 @Composable
 private fun MediaKindTile(
     label: String,
-    mark: String,
+    icon: ImageVector,
     enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
@@ -338,11 +345,11 @@ private fun MediaKindTile(
                     .background(ChatStitchTokens.SoftBlueContainer),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = mark,
-                    color = ChatStitchTokens.BrandBlue,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = if (mark == "PDF") 12.sp else 22.sp
+                Icon(
+                    imageVector = icon,
+                    contentDescription = label,
+                    tint = ChatStitchTokens.BrandBlue,
+                    modifier = Modifier.size(22.dp)
                 )
             }
             Text(
