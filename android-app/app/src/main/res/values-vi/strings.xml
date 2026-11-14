@@ -5,7 +5,7 @@
     <string name="chat_filter_all">Tất cả</string>
     <string name="chat_filter_unread">Chưa đọc</string>
     <string name="chat_filter_groups">Nhóm</string>
-    <string name="chat_list_empty">Chưa có cuộc trò chuyện nào. Cần kết nối backend hoặc tạo nhóm.</string>
+    <string name="chat_list_empty">Chưa có cuộc trò chuyện nào. Hãy bắt đầu trò chuyện hoặc tạo nhóm mới.</string>
     <string name="chat_connection_disconnected">Chưa kết nối</string>
     <string name="chat_connection_connecting">Đang kết nối…</string>
     <string name="chat_connection_connected">Đã kết nối</string>
@@ -13,6 +13,8 @@
     <string name="chat_pinned_badge">Đã ghim</string>
     <string name="chat_back">Quay lại</string>
     <string name="chat_room_empty">Chưa có tin nhắn nào.</string>
+    <string name="chat_date_today">Hôm nay</string>
+    <string name="chat_date_yesterday">Hôm qua</string>
     <string name="chat_input_hint">Nhập tin nhắn…</string>
     <string name="chat_send">Gửi</string>
     <string name="chat_status_sending">Đang gửi</string>
@@ -28,6 +30,7 @@
     <string name="group_create_title">Tạo nhóm mới</string>
     <string name="group_name_hint">Tên nhóm</string>
     <string name="group_select_members_hint">Chọn ít nhất 2 thành viên</string>
+    <string name="group_no_contacts">Chưa có bạn bè nào. Hãy kết bạn trong Danh bạ để tạo nhóm.</string>
     <string name="group_create_action">Tạo nhóm</string>
     <string name="auth_title">AndroidChat</string>
     <string name="auth_login_subtitle">Đăng nhập vào tài khoản</string>
@@ -42,8 +45,8 @@
     <string name="auth_submit_register">Tạo tài khoản</string>
     <string name="auth_create_account_prompt">Chưa có tài khoản? Đăng ký</string>
     <string name="auth_error_invalid_email">Vui lòng nhập địa chỉ email hợp lệ.</string>
-    <string name="auth_error_password_too_short">Mật khẩu phải có ít nhất 10 byte.</string>
-    <string name="auth_error_password_too_long">Mật khẩu không được vượt quá 72 byte UTF-8.</string>
+    <string name="auth_error_password_too_short">Mật khẩu phải có ít nhất 10 ký tự.</string>
+    <string name="auth_error_password_too_long">Mật khẩu không được vượt quá 72 ký tự.</string>
     <string name="auth_error_invalid_display_name">Tên hiển thị phải có từ 1 đến 80 ký tự.</string>
     <string name="auth_error_invalid_username">Tên người dùng gồm 3–24 chữ cái, chữ số hoặc dấu gạch dưới.</string>
     <string name="auth_error_invalid_credentials">Email hoặc mật khẩu không chính xác.</string>

@@ -11,14 +11,17 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -51,8 +54,12 @@ fun CreateGroupScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.group_create_title)) },
                 navigationIcon = {
-                    TextButton(onClick = onBackClick) {
-                        Text("←", fontSize = 20.sp)
+                    IconButton(onClick = onBackClick) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.chat_back),
+                            tint = ChatStitchTokens.TextPrimary
+                        )
                     }
                 }
             )
@@ -82,6 +89,16 @@ fun CreateGroupScreen(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
+                if (uiState.availableContacts.isEmpty()) {
+                    item {
+                        Text(
+                            text = stringResource(R.string.group_no_contacts),
+                            color = ChatStitchTokens.TextMuted,
+                            fontSize = 14.sp,
+                            modifier = Modifier.padding(vertical = 16.dp)
+                        )
+                    }
+                }
                 items(uiState.availableContacts, key = { it.userId }) { contact ->
                     val checked = contact.userId in uiState.selectedMemberIds
                     Row(

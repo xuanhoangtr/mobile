@@ -16,12 +16,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -74,11 +79,11 @@ fun ChatRoomScreen(
                     containerColor = ChatStitchTokens.CardWhite
                 ),
                 navigationIcon = {
-                    TextButton(onClick = onBackClick) {
-                        Text(
-                            text = "←",
-                            fontSize = 20.sp,
-                            color = ChatStitchTokens.TextPrimary
+                    IconButton(onClick = onBackClick) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.chat_back),
+                            tint = ChatStitchTokens.TextPrimary
                         )
                     }
                 },
@@ -129,12 +134,11 @@ fun ChatRoomScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (onAttachMediaClick != null) {
-                        TextButton(onClick = onAttachMediaClick) {
-                            Text(
-                                text = "+",
-                                fontSize = 22.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = ChatStitchTokens.BrandBlue
+                        IconButton(onClick = onAttachMediaClick) {
+                            Icon(
+                                imageVector = Icons.Filled.Add,
+                                contentDescription = stringResource(R.string.media_foundation_title),
+                                tint = ChatStitchTokens.BrandBlue
                             )
                         }
                     }
@@ -175,6 +179,8 @@ fun ChatRoomScreen(
                 )
             }
         } else {
+            val todayLabel = stringResource(R.string.chat_date_today)
+            val yesterdayLabel = stringResource(R.string.chat_date_yesterday)
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
@@ -182,10 +188,48 @@ fun ChatRoomScreen(
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(uiState.messages, key = { it.localId }) { message ->
+                itemsIndexed(uiState.messages, key = { _, msg -> msg.localId }) { index, message ->
+                    val currentDate = ChatTimeFormatter.dateKey(message.createdAt)
+                    val previousDate = if (index > 0) {
+                        ChatTimeFormatter.dateKey(uiState.messages[index - 1].createdAt)
+                    } else {
+                        null
+                    }
+                    if (currentDate != null && currentDate != previousDate) {
+                        DateSeparator(
+                            label = ChatTimeFormatter.formatDateHeader(
+                                date = currentDate,
+                                todayLabel = todayLabel,
+                                yesterdayLabel = yesterdayLabel
+                            )
+                        )
+                    }
                     MessageBubble(message = message)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun DateSeparator(label: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            color = ChatStitchTokens.SoftBlueContainer,
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Text(
+                text = label,
+                color = ChatStitchTokens.TextSecondary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+            )
         }
     }
 }
@@ -217,7 +261,7 @@ private fun MessageBubble(message: MessageUiModel) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        text = message.createdAt,
+                        text = ChatTimeFormatter.formatTimeOnly(message.createdAt),
                         color = if (isMine) Color.White.copy(alpha = 0.8f) else ChatStitchTokens.TextMuted,
                         fontSize = 11.sp
                     )

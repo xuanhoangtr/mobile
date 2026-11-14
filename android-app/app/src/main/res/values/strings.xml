@@ -5,14 +5,16 @@
     <string name="chat_filter_all">All</string>
     <string name="chat_filter_unread">Unread</string>
     <string name="chat_filter_groups">Groups</string>
-    <string name="chat_list_empty">No conversations yet. Connect backend or create a group.</string>
-    <string name="chat_connection_disconnected">Offline skeleton</string>
+    <string name="chat_list_empty">No conversations yet. Start a chat or create a group.</string>
+    <string name="chat_connection_disconnected">Offline</string>
     <string name="chat_connection_connecting">Connecting…</string>
     <string name="chat_connection_connected">Connected</string>
     <string name="chat_connection_reconnecting">Reconnecting…</string>
     <string name="chat_pinned_badge">Pinned</string>
     <string name="chat_back">Back</string>
     <string name="chat_room_empty">No messages yet.</string>
+    <string name="chat_date_today">Today</string>
+    <string name="chat_date_yesterday">Yesterday</string>
     <string name="chat_input_hint">Type a message…</string>
     <string name="chat_send">Send</string>
     <string name="chat_status_sending">Sending</string>
@@ -28,6 +30,7 @@
     <string name="group_create_title">Create group</string>
     <string name="group_name_hint">Group name</string>
     <string name="group_select_members_hint">Select at least 2 members</string>
+    <string name="group_no_contacts">No friends yet. Add friends in Contacts to create a group.</string>
     <string name="group_create_action">Create</string>
     <string name="auth_title">AndroidChat</string>
     <string name="auth_login_subtitle">Sign in to your account</string>
@@ -42,8 +45,8 @@
     <string name="auth_submit_register">Create account</string>
     <string name="auth_create_account_prompt">New here? Create an account</string>
     <string name="auth_error_invalid_email">Enter a valid email address.</string>
-    <string name="auth_error_password_too_short">Password must contain at least 10 bytes.</string>
-    <string name="auth_error_password_too_long">Password must not exceed 72 UTF-8 bytes.</string>
+    <string name="auth_error_password_too_short">Password must be at least 10 characters.</string>
+    <string name="auth_error_password_too_long">Password must be at most 72 characters.</string>
     <string name="auth_error_invalid_display_name">Display name must contain 1 to 80 characters.</string>
     <string name="auth_error_invalid_username">Username must use 3–24 letters, numbers, or underscores.</string>
     <string name="auth_error_invalid_credentials">Email or password is incorrect.</string>

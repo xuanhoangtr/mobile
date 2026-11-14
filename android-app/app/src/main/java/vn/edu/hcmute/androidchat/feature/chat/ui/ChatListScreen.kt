@@ -19,6 +19,12 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ChatBubble
+import androidx.compose.material.icons.outlined.Call
+import androidx.compose.material.icons.outlined.People
+import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material3.Badge
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -26,6 +32,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
@@ -136,10 +143,9 @@ fun ChatListScreen(
                 contentColor = Color.White,
                 shape = RoundedCornerShape(16.dp)
             ) {
-                Text(
-                    text = "+",
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.Bold
+                Icon(
+                    imageVector = Icons.Filled.Add,
+                    contentDescription = stringResource(R.string.chat_new_group)
                 )
             }
         },
@@ -148,25 +154,49 @@ fun ChatListScreen(
                 NavigationBarItem(
                     selected = true,
                     onClick = {},
-                    icon = { Text("●", color = ChatStitchTokens.BrandBlue) },
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Filled.ChatBubble,
+                            contentDescription = stringResource(R.string.nav_chats),
+                            tint = ChatStitchTokens.BrandBlue
+                        )
+                    },
                     label = { Text(stringResource(R.string.nav_chats), maxLines = 1) }
                 )
                 NavigationBarItem(
                     selected = false,
                     onClick = onContactsClick,
-                    icon = { Text("○", color = ChatStitchTokens.TextMuted) },
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Outlined.People,
+                            contentDescription = stringResource(R.string.nav_contacts),
+                            tint = ChatStitchTokens.TextMuted
+                        )
+                    },
                     label = { Text(stringResource(R.string.nav_contacts), maxLines = 1) }
                 )
                 NavigationBarItem(
                     selected = false,
-                    onClick = onProfileClick,
-                    icon = { Text("○", color = ChatStitchTokens.TextMuted) },
+                    onClick = {},
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Outlined.Call,
+                            contentDescription = stringResource(R.string.nav_calls),
+                            tint = ChatStitchTokens.TextMuted
+                        )
+                    },
                     label = { Text(stringResource(R.string.nav_calls), maxLines = 1) }
                 )
                 NavigationBarItem(
                     selected = false,
-                    onClick = {},
-                    icon = { Text("○", color = ChatStitchTokens.TextMuted) },
+                    onClick = onProfileClick,
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Outlined.Person,
+                            contentDescription = stringResource(R.string.nav_profile),
+                            tint = ChatStitchTokens.TextMuted
+                        )
+                    },
                     label = { Text(stringResource(R.string.nav_profile), maxLines = 1) }
                 )
             }
@@ -365,7 +395,7 @@ private fun ConversationRow(
                     if (!conversation.lastMessageTime.isNullOrBlank()) {
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = conversation.lastMessageTime,
+                            text = ChatTimeFormatter.formatConversationListTime(conversation.lastMessageTime),
                             color = ChatStitchTokens.TextMuted,
                             fontSize = 12.sp
                         )
