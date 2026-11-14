@@ -9,8 +9,11 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.post
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import java.util.concurrent.ConcurrentHashMap
+import javax.sql.DataSource
 import vn.edu.hcmute.androidchat.backend.common.AUTH_JWT_NAME
 import vn.edu.hcmute.androidchat.backend.common.ApiErrorDetail
 import vn.edu.hcmute.androidchat.backend.common.ApiErrorResponse
@@ -29,17 +32,53 @@ data class PushTokenResponse(
     val registered: Boolean
 )
 
-class PushTokenRegistry {
+/** Stores device push tokens in PostgreSQL when configured, with an in-memory fallback for tests. */
+class PushTokenRegistry(private val dataSource: DataSource? = null) {
     private val tokens = ConcurrentHashMap<Long, MutableMap<String, String>>()
 
-    fun register(userId: Long, request: PushTokenRequest) {
+    suspend fun register(userId: Long, request: PushTokenRequest) {
         validate(request)
+        if (dataSource != null) {
+            withContext(Dispatchers.IO) {
+                dataSource.connection.use { conn ->
+                    conn.prepareStatement(
+                        """
+                        INSERT INTO device_push_tokens (user_id, device_id, token, enabled, updated_at)
+                        VALUES (?, ?, ?, ?, NOW())
+                        ON CONFLICT (user_id, device_id) DO UPDATE SET
+                            token = EXCLUDED.token,
+                            enabled = EXCLUDED.enabled,
+                            updated_at = NOW()
+                        """.trimIndent()
+                    ).use { stmt ->
+                        stmt.setLong(1, userId)
+                        stmt.setString(2, request.deviceId)
+                        stmt.setString(3, request.token)
+                        stmt.setBoolean(4, request.enabled)
+                        stmt.executeUpdate()
+                    }
+                }
+            }
+        }
         tokens.computeIfAbsent(userId) { ConcurrentHashMap() }[request.deviceId] =
             if (request.enabled) request.token else ""
     }
 
-    fun unregister(userId: Long, deviceId: String) {
+    suspend fun unregister(userId: Long, deviceId: String) {
         require(deviceId.isNotBlank()) { "deviceId is required" }
+        if (dataSource != null) {
+            withContext(Dispatchers.IO) {
+                dataSource.connection.use { conn ->
+                    conn.prepareStatement(
+                        "DELETE FROM device_push_tokens WHERE user_id = ? AND device_id = ?"
+                    ).use { stmt ->
+                        stmt.setLong(1, userId)
+                        stmt.setString(2, deviceId)
+                        stmt.executeUpdate()
+                    }
+                }
+            }
+        }
         tokens[userId]?.remove(deviceId)
     }
 

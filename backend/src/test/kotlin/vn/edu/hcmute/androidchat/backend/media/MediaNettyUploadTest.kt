@@ -111,14 +111,12 @@ class MediaNettyUploadTest {
 
     private suspend fun waitForSlots(service: MediaService) = withTimeout(3_000) {
         while (true) {
-            if (service.uploadSlots.tryAcquire()) {
-                if (service.uploadSlots.tryAcquire()) {
-                    service.uploadSlots.release()
-                    service.uploadSlots.release()
-                    return@withTimeout
-                }
-                service.uploadSlots.release()
+            var acquired = 0
+            while (acquired < 6 && service.uploadSlots.tryAcquire()) {
+                acquired++
             }
+            repeat(acquired) { service.uploadSlots.release() }
+            if (acquired == 6) return@withTimeout
             delay(10)
         }
     }

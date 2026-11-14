@@ -10,7 +10,10 @@ import io.ktor.http.content.OutgoingContent
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.writeFully
 import io.ktor.server.testing.*
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.*
@@ -217,11 +220,9 @@ class MediaRoutesTest {
         assertEquals(HttpStatusCode.RequestTimeout, response.status)
         assertEquals(0L, Files.list(root).use { it.count() })
         withTimeout(2_000) {
-            service.uploadSlots.acquire()
-            service.uploadSlots.acquire()
+            repeat(6) { service.uploadSlots.acquire() }
         }
-        service.uploadSlots.release()
-        service.uploadSlots.release()
+        repeat(6) { service.uploadSlots.release() }
     }
 
     @Test fun emptyAndInvalidUtf8AreRejected() = fixture { root, _ ->
@@ -257,10 +258,10 @@ class MediaRoutesTest {
     @Test fun totalStorageQuotaAndConcurrentUploadGateAreEnforced() = fixture(storage = { LocalMediaStorage(it, totalLimit = 4) }) { root, service ->
         assertEquals(HttpStatusCode.ServiceUnavailable, client.post("/media/upload") { bearerAuth(token()); setBody(body()) }.status)
         assertEquals(0L, Files.list(root).use { it.count() })
-        service.uploadSlots.acquire(); service.uploadSlots.acquire()
+        repeat(6) { service.uploadSlots.acquire() }
         try {
             assertEquals(HttpStatusCode.TooManyRequests, client.post("/media/upload") { bearerAuth(token()); setBody(body()) }.status)
-        } finally { service.uploadSlots.release(); service.uploadSlots.release() }
+        } finally { repeat(6) { service.uploadSlots.release() } }
     }
 
     @Test fun mediaIsNotRegisteredWithoutExplicitOptIn() = testApplication {
@@ -275,5 +276,49 @@ class MediaRoutesTest {
         val download = client.get("/media/$id/download") { bearerAuth(token()) }
         assertEquals(HttpStatusCode.ServiceUnavailable, download.status)
         assertFalse(download.bodyAsText().contains(root.toString()))
+    }
+
+    @Test fun conversationMemberCanReadAndDownloadWhileOutsiderIsRejected() = testApplication {
+        val root = Files.createTempDirectory("media-member-acl-test-")
+        val membersByConv = mapOf(101L to setOf(7L, 8L))
+        val service = MediaService(
+            storage = LocalMediaStorage(root),
+            maxBytes = 64,
+            isConversationMember = { convId, uid -> uid in membersByConv[convId].orEmpty() }
+        )
+        application { module(config); configureMediaFoundation(config, service) }
+        try {
+            val bytes = "Shared photo".toByteArray()
+            val upload = client.post("/media/upload") { bearerAuth(token(7)); setBody(body(bytes, extra = true)) }
+            assertEquals(HttpStatusCode.Created, upload.status)
+            val id = AppJson.parseToJsonElement(upload.bodyAsText()).jsonObject.getValue("id").jsonPrimitive.long
+
+            // Member 8 can fetch metadata and download exact bytes
+            assertEquals(HttpStatusCode.OK, client.get("/media/$id") { bearerAuth(token(8)) }.status)
+            val download = client.get("/media/$id/download") { bearerAuth(token(8)) }
+            assertEquals(HttpStatusCode.OK, download.status)
+            assertContentEquals(bytes, download.readRawBytes())
+
+            // Non-member 9 is denied
+            assertEquals(HttpStatusCode.NotFound, client.get("/media/$id") { bearerAuth(token(9)) }.status)
+            assertEquals(HttpStatusCode.NotFound, client.get("/media/$id/download") { bearerAuth(token(9)) }.status)
+        } finally {
+            Files.walk(root).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists) }
+        }
+    }
+
+    @Test fun batchConcurrentUploadsAreAllowedUpToSixSlots() = fixture { _, service ->
+        assertEquals(6, service.uploadSlots.availablePermits)
+        val responses = coroutineScope {
+            (1..4).map { idx ->
+                async {
+                    client.post("/media/upload") {
+                        bearerAuth(token())
+                        setBody(body("batch-$idx".toByteArray(), name = "photo-$idx.txt"))
+                    }
+                }
+            }.awaitAll()
+        }
+        assertTrue(responses.all { it.status == HttpStatusCode.Created })
     }
 }

@@ -116,7 +116,20 @@ internal fun Application.module(
     if (authRepositoryOverride != null || dbManager.dataSource != null) {
         installAuthSessionValidation(config, authService)
     }
-    configureMediaFoundation(config)
+    val chatSessions = ChatSessionRegistry()
+    configureMediaFoundation(
+        config = config,
+        dataSource = dbManager.dataSource,
+        isConversationMember = { convId, uid -> uid in chatRepository.activeMemberIds(convId) },
+        onCallEvent = { targets, type, payload ->
+            chatSessions.broadcastToUsers(
+                userIds = targets,
+                type = type,
+                requestId = null,
+                payload = payload
+            )
+        }
+    )
 
     routing {
         get("/health") {
@@ -131,7 +144,6 @@ internal fun Application.module(
             )
         }
 
-        val chatSessions = ChatSessionRegistry()
         registerChatRoutes(chatRepository, chatSessions)
         registerChatWebSocketRoutes(chatRepository, chatSessions)
         registerGroupRoutes()

@@ -20,7 +20,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.JsonElement
 import java.util.concurrent.atomic.AtomicBoolean
+import javax.sql.DataSource
 import vn.edu.hcmute.androidchat.backend.common.*
 import java.io.IOException
 import java.nio.file.Path
@@ -153,27 +155,45 @@ private fun ApplicationCall.installMediaRequestBodyLimit(limit: Long, boundary: 
     return LimitedRequestBody(source, output, pump, exceeded, closingBoundary)
 }
 
-/** Explicit development opt-in; does not change the shared JWT/session or CHAT contract. */
+/** Explicit opt-in media/push/call foundation; preserves shared JWT/session and CHAT contracts. */
 fun Application.configureMediaFoundation(
     config: AppConfig,
-    service: MediaService? = mediaFromEnv(config),
-    pushTokenRegistry: PushTokenRegistry = PushTokenRegistry(),
-    callSessionRegistry: CallSessionRegistry = CallSessionRegistry()
+    service: MediaService? = null,
+    pushTokenRegistry: PushTokenRegistry? = null,
+    callSessionRegistry: CallSessionRegistry? = null,
+    dataSource: DataSource? = null,
+    isConversationMember: (suspend (conversationId: Long, userId: Long) -> Boolean)? = null,
+    onCallEvent: suspend (targetUserIds: Set<Long>, eventType: String, payload: JsonElement) -> Unit = { _, _, _ -> }
 ) {
-    if (service == null) return
+    val mediaMemberChecker: suspend (Long, Long) -> Boolean = isConversationMember ?: { _, _ -> false }
+    val resolvedService = service ?: mediaFromEnv(config, dataSource, mediaMemberChecker) ?: return
+    val resolvedPushRegistry = pushTokenRegistry ?: PushTokenRegistry(dataSource)
+    val resolvedCallRegistry = callSessionRegistry ?: CallSessionRegistry(
+        dataSource = dataSource,
+        isConversationMember = isConversationMember,
+        onCallEvent = onCallEvent
+    )
     routing {
-        registerMediaRoutes(service)
-        registerPushTokenRoutes(pushTokenRegistry)
-        registerCallRoutes(callSessionRegistry)
+        registerMediaRoutes(resolvedService)
+        registerPushTokenRoutes(resolvedPushRegistry)
+        registerCallRoutes(resolvedCallRegistry)
     }
 }
 
-private fun mediaFromEnv(config: AppConfig): MediaService? {
+private fun mediaFromEnv(
+    config: AppConfig,
+    dataSource: DataSource?,
+    isConversationMember: suspend (conversationId: Long, userId: Long) -> Boolean
+): MediaService? {
     val enabled = System.getenv("MEDIA_ENABLED") == "true" ||
         System.getenv("MEDIA_DEV_ENABLED") == "true"
     if (!enabled) return null
     val storageDir = System.getenv("MEDIA_STORAGE_DIR")?.takeIf { it.isNotBlank() } ?: "storage/media-dev"
-    return MediaService(LocalMediaStorage(Path.of(storageDir)))
+    return MediaService(
+        storage = LocalMediaStorage(Path.of(storageDir)),
+        dataSource = dataSource,
+        isConversationMember = isConversationMember
+    )
 }
 
 fun Route.registerMediaRoutes(service: MediaService) {
