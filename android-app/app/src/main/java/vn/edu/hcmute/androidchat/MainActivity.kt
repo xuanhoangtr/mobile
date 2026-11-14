@@ -206,8 +206,11 @@ class MainActivity : ComponentActivity() {
                     val authenticated = authState.authenticatedUser
                     if (authenticated == null) {
                         cachedAccessToken = null
+                        chatListViewModel.setActiveConversation(null)
+                        chatRoomViewModel.clearActiveConversation()
                         chatTransport.disconnect()
                     } else {
+                        chatListViewModel.setCurrentUserId(authenticated.user.id)
                         val token = authFeature.tokenProvider.accessToken()
                         cachedAccessToken = token
                         if (!token.isNullOrBlank()) {
@@ -225,6 +228,8 @@ class MainActivity : ComponentActivity() {
                         if (currentRoute == SkeletonRoute.CHAT_ROOM) {
                             voiceViewModel.clear()
                             voiceMessagePlayback.stop()
+                            chatListViewModel.setActiveConversation(null)
+                            chatRoomViewModel.clearActiveConversation()
                         }
                         currentRoute = when (currentRoute) {
                             SkeletonRoute.MEDIA_PICKER -> SkeletonRoute.CHAT_ROOM
@@ -242,11 +247,21 @@ class MainActivity : ComponentActivity() {
                                 uiState = listState,
                                 onSearchQueryChange = chatListViewModel::onSearchQueryChanged,
                                 onConversationClick = { conversation ->
+                                    val currentUserId = requireNotNull(authState.authenticatedUser).user.id
+                                    val latestPresence = conversation.peerUserId?.let {
+                                        chatListViewModel.presenceForPeer(it)
+                                    }
+                                    chatListViewModel.setCurrentUserId(currentUserId)
+                                    chatListViewModel.markConversationRead(conversation.id)
+                                    chatListViewModel.setActiveConversation(conversation.id)
                                     chatRoomViewModel.openConversation(
                                         conversationId = conversation.id,
                                         title = conversation.title,
                                         isGroup = conversation.type == ConversationType.GROUP,
-                                        currentUserId = requireNotNull(authState.authenticatedUser).user.id
+                                        currentUserId = currentUserId,
+                                        peerUserId = conversation.peerUserId,
+                                        initialPeerOnline = latestPresence?.first ?: conversation.isOnline,
+                                        initialPeerLastSeenAt = latestPresence?.second ?: conversation.peerLastSeenAt
                                     )
                                     currentRoute = SkeletonRoute.CHAT_ROOM
                                 },
@@ -338,6 +353,8 @@ class MainActivity : ComponentActivity() {
                                     playingVoicePositionMs = 0L
                                     playingVoiceDurationMs = 0L
                                     voiceStatusMessage = null
+                                    chatListViewModel.setActiveConversation(null)
+                                    chatRoomViewModel.clearActiveConversation()
                                     currentRoute = SkeletonRoute.CHAT_LIST
                                 },
                                 onDraftChange = chatRoomViewModel::onDraftChanged,
@@ -432,7 +449,10 @@ class MainActivity : ComponentActivity() {
                                             baseUrl = backendBaseUrl,
                                             accessToken = token
                                         ) { created ->
+                                            chatListViewModel.setCurrentUserId(currentUserId)
                                             chatListViewModel.loadConversations(backendBaseUrl, token)
+                                            chatListViewModel.markConversationRead(created.id)
+                                            chatListViewModel.setActiveConversation(created.id)
                                             chatRoomViewModel.openConversation(
                                                 conversationId = created.id,
                                                 title = created.title,

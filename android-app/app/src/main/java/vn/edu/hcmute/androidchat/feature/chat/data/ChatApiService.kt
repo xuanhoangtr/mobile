@@ -176,6 +176,17 @@ object ChatRestParser {
             ?: obj.optString("updatedAt").takeIf { it.isNotBlank() && it != "null" }
         val id = obj.getLong("id")
         val rawName = obj.optString("name").takeIf { it.isNotBlank() && it != "null" }
+        val peerUserId = if (obj.has("peerUserId") && !obj.isNull("peerUserId")) {
+            obj.optLong("peerUserId", 0L).takeIf { it > 0L }
+        } else {
+            null
+        }
+        val isOnline = obj.optBoolean("isOnline", false)
+        val peerLastSeenAt = if (obj.has("peerLastSeenAt") && !obj.isNull("peerLastSeenAt")) {
+            obj.optString("peerLastSeenAt").takeIf { it.isNotBlank() && it != "null" }
+        } else {
+            null
+        }
         return ConversationUiModel(
             id = id,
             type = type,
@@ -183,7 +194,10 @@ object ChatRestParser {
             lastMessagePreview = lastPreview,
             lastMessageTime = lastTime,
             unreadCount = obj.optInt("unreadCount", 0),
-            isPinned = obj.optBoolean("isPinned", false)
+            isPinned = obj.optBoolean("isPinned", false),
+            isOnline = isOnline,
+            peerUserId = peerUserId,
+            peerLastSeenAt = peerLastSeenAt
         )
     }
 
@@ -211,6 +225,14 @@ object ChatRestParser {
         val editedAt = obj.optString("editedAt").takeIf { it.isNotBlank() && it != "null" }
         val replyToId = if (obj.has("replyToId") && !obj.isNull("replyToId")) obj.getLong("replyToId") else null
         val forwardedFromId = if (obj.has("forwardedFromId") && !obj.isNull("forwardedFromId")) obj.getLong("forwardedFromId") else null
+        val deliveryStatusRaw = if (obj.has("deliveryStatus") && !obj.isNull("deliveryStatus")) {
+            obj.optString("deliveryStatus").takeIf { it.isNotBlank() && it != "null" }
+        } else {
+            null
+        }
+        val deliveryStatus = deliveryStatusRaw?.let { raw ->
+            MessageDeliveryStatus.entries.firstOrNull { it.name.equals(raw, ignoreCase = true) }
+        } ?: MessageDeliveryStatus.DELIVERED
 
         return MessageUiModel(
             localId = clientMessageId,
@@ -222,7 +244,7 @@ object ChatRestParser {
             type = type,
             content = obj.optString("content", ""),
             createdAt = obj.optString("createdAt", ""),
-            deliveryStatus = MessageDeliveryStatus.DELIVERED,
+            deliveryStatus = deliveryStatus,
             replyToId = replyToId,
             forwardedFromId = forwardedFromId,
             isEdited = editedAt != null,

@@ -10,6 +10,10 @@
     <string name="chat_connection_connecting">Connecting…</string>
     <string name="chat_connection_connected">Connected</string>
     <string name="chat_connection_reconnecting">Reconnecting…</string>
+    <string name="chat_presence_online">Online</string>
+    <string name="chat_presence_offline">Offline</string>
+    <string name="chat_presence_last_seen">Last seen %1$s</string>
+    <string name="chat_group_subtitle">Group chat</string>
     <string name="chat_pinned_badge">Pinned</string>
     <string name="chat_back">Back</string>
     <string name="chat_room_empty">No messages yet.</string>

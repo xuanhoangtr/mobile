@@ -40,7 +40,9 @@ data class ConversationUiModel(
     val lastMessageTime: String?,
     val unreadCount: Int = 0,
     val isPinned: Boolean = false,
-    val isOnline: Boolean = false
+    val isOnline: Boolean = false,
+    val peerUserId: Long? = null,
+    val peerLastSeenAt: String? = null
 )
 
 data class MessageUiModel(
@@ -98,6 +100,7 @@ data class ChatRoomUiState(
     val firstVisibleMessageIndex: Int = 0,
     val firstVisibleMessageOffset: Int = 0,
     val typingUserNames: List<String> = emptyList(),
+    val peerUserId: Long? = null,
     val isPeerOnline: Boolean = false,
     val peerLastSeenAt: String? = null,
     val connectionState: WsConnectionState = WsConnectionState.DISCONNECTED,

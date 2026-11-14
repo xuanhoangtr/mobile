@@ -44,10 +44,28 @@ internal object ChatTimeFormatter {
         }
     }
 
-    private fun parseZonedDateTime(raw: String): ZonedDateTime? {
+    fun formatLastSeen(
+        isoTimestamp: String?,
+        yesterdayLabel: String = "Yesterday",
+        todayLabel: String? = null,
+        nowInstant: Instant = Instant.now(),
+        zone: ZoneId = ZoneId.systemDefault()
+    ): String? {
+        val raw = isoTimestamp?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val zoned = parseZonedDateTime(raw, zone) ?: return null
+        val today = nowInstant.atZone(zone).toLocalDate()
+        val date = zoned.toLocalDate()
+        val timeText = zoned.format(timeFormatter)
+        return when {
+            date == today -> if (!todayLabel.isNullOrBlank()) "$todayLabel $timeText" else timeText
+            date == today.minusDays(1) -> "$yesterdayLabel $timeText"
+            else -> "${zoned.format(shortDateFormatter)} $timeText"
+        }
+    }
+
+    private fun parseZonedDateTime(raw: String, zone: ZoneId = ZoneId.systemDefault()): ZonedDateTime? {
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) return null
-        val zone = ZoneId.systemDefault()
         return runCatching { Instant.parse(trimmed).atZone(zone) }.getOrNull()
             ?: runCatching { OffsetDateTime.parse(trimmed).atZoneSameInstant(zone) }.getOrNull()
     }

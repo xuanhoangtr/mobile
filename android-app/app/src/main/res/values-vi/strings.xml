@@ -10,6 +10,10 @@
     <string name="chat_connection_connecting">Đang kết nối…</string>
     <string name="chat_connection_connected">Đã kết nối</string>
     <string name="chat_connection_reconnecting">Đang kết nối lại…</string>
+    <string name="chat_presence_online">Đang hoạt động</string>
+    <string name="chat_presence_offline">Ngoại tuyến</string>
+    <string name="chat_presence_last_seen">Hoạt động lần cuối %1$s</string>
+    <string name="chat_group_subtitle">Nhóm trò chuyện</string>
     <string name="chat_pinned_badge">Đã ghim</string>
     <string name="chat_back">Quay lại</string>
     <string name="chat_room_empty">Chưa có tin nhắn nào.</string>

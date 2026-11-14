@@ -12,12 +12,14 @@ import vn.edu.hcmute.androidchat.feature.chat.data.ChatLocalCache
 import vn.edu.hcmute.androidchat.feature.chat.data.ChatRealtimeTransport
 import vn.edu.hcmute.androidchat.feature.chat.data.ChatServerEvent
 import vn.edu.hcmute.androidchat.feature.chat.model.ChatListUiState
+import vn.edu.hcmute.androidchat.feature.chat.model.ConversationType
 import vn.edu.hcmute.androidchat.feature.chat.model.ConversationUiModel
+import vn.edu.hcmute.androidchat.feature.chat.model.MessageDeliveryStatus
 import vn.edu.hcmute.androidchat.feature.chat.model.WsConnectionState
 
 /**
  * Holds chat list UI state across configuration changes (e.g. screen rotation)
- * and synchronizes REST conversations, local cache, and WebSocket updates.
+ * and synchronizes REST conversations, local cache, presence, and WebSocket updates.
  */
 class ChatListViewModel(
     private val transport: ChatRealtimeTransport? = null,
@@ -26,6 +28,11 @@ class ChatListViewModel(
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(ChatListUiState())
     val uiState: StateFlow<ChatListUiState> = _uiState.asStateFlow()
+
+    private var activeCurrentUserId: Long = 0L
+    private var activeConversationId: Long? = null
+    private val peerPresenceByUserId = mutableMapOf<Long, Pair<Boolean, String?>>()
+    private val sentDeliveredReceiptIds = mutableSetOf<Long>()
 
     init {
         if (transport != null) {
@@ -42,11 +49,55 @@ class ChatListViewModel(
         }
     }
 
+    fun setCurrentUserId(userId: Long) {
+        if (userId > 0L) {
+            activeCurrentUserId = userId
+        }
+    }
+
+    fun setActiveConversation(conversationId: Long?) {
+        activeConversationId = conversationId
+    }
+
+    fun presenceForPeer(peerUserId: Long): Pair<Boolean, String?>? {
+        if (peerUserId <= 0L) return null
+        return peerPresenceByUserId[peerUserId]
+            ?: _uiState.value.conversations
+                .firstOrNull { it.type == ConversationType.DIRECT && it.peerUserId == peerUserId }
+                ?.let { it.isOnline to it.peerLastSeenAt }
+    }
+
+    fun markConversationRead(conversationId: Long) {
+        if (conversationId <= 0L) return
+        var changed = false
+        _uiState.update { state ->
+            val updated = state.conversations.map { item ->
+                if (item.id == conversationId && item.unreadCount > 0) {
+                    changed = true
+                    item.copy(unreadCount = 0)
+                } else {
+                    item
+                }
+            }
+            if (changed) state.copy(conversations = updated) else state
+        }
+        if (changed) {
+            viewModelScope.launch {
+                runCatching { localCache?.saveConversations(_uiState.value.conversations) }
+            }
+        }
+    }
+
     fun loadConversations(baseUrl: String, accessToken: String) {
         viewModelScope.launch {
             val cached = runCatching { localCache?.getConversations().orEmpty() }.getOrDefault(emptyList())
             if (cached.isNotEmpty() && _uiState.value.conversations.isEmpty()) {
-                _uiState.update { it.copy(conversations = cached, isLoading = apiService != null) }
+                _uiState.update {
+                    it.copy(
+                        conversations = applyCachedPresence(cached),
+                        isLoading = apiService != null
+                    )
+                }
             } else {
                 setLoading(apiService != null)
             }
@@ -59,7 +110,7 @@ class ChatListViewModel(
 
             remote.onSuccess { page ->
                 setConversations(page.items)
-                runCatching { localCache?.saveConversations(page.items) }
+                runCatching { localCache?.saveConversations(_uiState.value.conversations) }
             }.onFailure { err ->
                 setError(err.message ?: "Failed to load conversations")
             }
@@ -80,17 +131,18 @@ class ChatListViewModel(
                 accessToken = accessToken,
                 targetUserId = targetUserId
             ).onSuccess { conversation ->
+                val resolvedConversation = applyCachedPresence(listOf(conversation)).single()
                 _uiState.update { state ->
-                    val existing = state.conversations.any { it.id == conversation.id }
+                    val existing = state.conversations.any { it.id == resolvedConversation.id }
                     val updated = if (existing) {
-                        state.conversations.map { if (it.id == conversation.id) conversation else it }
+                        state.conversations.map { if (it.id == resolvedConversation.id) resolvedConversation else it }
                     } else {
-                        listOf(conversation) + state.conversations
+                        listOf(resolvedConversation) + state.conversations
                     }
                     state.copy(isLoading = false, conversations = updated, errorMessage = null)
                 }
                 runCatching { localCache?.saveConversations(_uiState.value.conversations) }
-                onReady(conversation)
+                onReady(resolvedConversation)
             }.onFailure { err ->
                 setError(err.message ?: "Failed to open direct conversation")
             }
@@ -106,7 +158,13 @@ class ChatListViewModel(
     }
 
     fun setConversations(conversations: List<ConversationUiModel>) {
-        _uiState.update { it.copy(isLoading = false, conversations = conversations, errorMessage = null) }
+        _uiState.update {
+            it.copy(
+                isLoading = false,
+                conversations = applyCachedPresence(conversations),
+                errorMessage = null
+            )
+        }
     }
 
     fun setLoading(loading: Boolean) {
@@ -143,9 +201,32 @@ class ChatListViewModel(
         }
     }
 
+    private fun applyCachedPresence(conversations: List<ConversationUiModel>): List<ConversationUiModel> {
+        if (peerPresenceByUserId.isEmpty()) return conversations
+        return conversations.map { conv ->
+            val peerId = conv.peerUserId
+            val cached = if (conv.type == ConversationType.DIRECT && peerId != null) {
+                peerPresenceByUserId[peerId]
+            } else {
+                null
+            }
+            if (cached != null) {
+                conv.copy(
+                    isOnline = cached.first,
+                    peerLastSeenAt = cached.second ?: conv.peerLastSeenAt
+                )
+            } else {
+                conv
+            }
+        }
+    }
+
     private fun handleServerEvent(event: ChatServerEvent) {
         when (event) {
             is ChatServerEvent.MessageCreated -> {
+                val isIncoming = activeCurrentUserId == 0L || event.senderId != activeCurrentUserId
+                val isInActiveRoom = event.conversationId == activeConversationId
+                val shouldIncrementUnread = isIncoming && !isInActiveRoom
                 _uiState.update { state ->
                     state.copy(
                         conversations = state.conversations.map { item ->
@@ -153,7 +234,7 @@ class ChatListViewModel(
                                 item.copy(
                                     lastMessagePreview = event.content,
                                     lastMessageTime = event.createdAt,
-                                    unreadCount = item.unreadCount + 1
+                                    unreadCount = if (shouldIncrementUnread) item.unreadCount + 1 else item.unreadCount
                                 )
                             } else {
                                 item
@@ -161,8 +242,44 @@ class ChatListViewModel(
                         }
                     )
                 }
+                if (isIncoming &&
+                    !isInActiveRoom &&
+                    event.id > 0L &&
+                    event.id !in sentDeliveredReceiptIds
+                ) {
+                    val sent = transport?.sendReceipt(
+                        conversationId = event.conversationId,
+                        messageId = event.id,
+                        status = MessageDeliveryStatus.DELIVERED
+                    ) == true
+                    if (sent) {
+                        sentDeliveredReceiptIds += event.id
+                    }
+                }
                 viewModelScope.launch {
                     runCatching { localCache?.saveConversations(_uiState.value.conversations) }
+                }
+            }
+
+            is ChatServerEvent.Presence -> {
+                if (event.userId <= 0L || (activeCurrentUserId > 0L && event.userId == activeCurrentUserId)) return
+                val isOnline = event.status.equals("ONLINE", ignoreCase = true)
+                val previousLastSeen = peerPresenceByUserId[event.userId]?.second
+                val normalizedLastSeen = event.lastSeenAt.takeIf { it.isNotBlank() } ?: previousLastSeen
+                peerPresenceByUserId[event.userId] = isOnline to normalizedLastSeen
+                _uiState.update { state ->
+                    state.copy(
+                        conversations = state.conversations.map { item ->
+                            if (item.type == ConversationType.DIRECT && item.peerUserId == event.userId) {
+                                item.copy(
+                                    isOnline = isOnline,
+                                    peerLastSeenAt = normalizedLastSeen ?: item.peerLastSeenAt
+                                )
+                            } else {
+                                item
+                            }
+                        }
+                    )
                 }
             }
 

@@ -410,10 +410,240 @@ class ChatViewModelsTest {
         assertEquals(ids.sorted(), ids)
     }
 
+    @Test
+    fun chatListViewModelTracksPresenceClearsUnreadAndSendsDeliveredReceiptForBackgroundMessages() = runTest {
+        val fakeTransport = FakeChatRealtimeTransport()
+        val fakeCache = FakeChatLocalCache()
+        val vm = ChatListViewModel(transport = fakeTransport, localCache = fakeCache)
+        vm.setCurrentUserId(42L)
+        fakeTransport.connectionStateFlow.value = WsConnectionState.CONNECTED
+
+        // Presence arrives before conversations are loaded -> cached and applied on setConversations
+        fakeTransport.eventsFlow.emit(ChatServerEvent.Presence(99L, "ONLINE", "2026-11-14T10:00:00Z"))
+        assertEquals(true to "2026-11-14T10:00:00Z", vm.presenceForPeer(99L))
+
+        vm.setConversations(
+            listOf(
+                ConversationUiModel(
+                    id = 101L,
+                    type = ConversationType.DIRECT,
+                    title = "Peer 99",
+                    lastMessagePreview = "Hi",
+                    lastMessageTime = "09:50",
+                    unreadCount = 2,
+                    isOnline = false,
+                    peerUserId = 99L,
+                    peerLastSeenAt = "2026-11-14T09:00:00Z"
+                ),
+                ConversationUiModel(
+                    id = 202L,
+                    type = ConversationType.GROUP,
+                    title = "Group",
+                    lastMessagePreview = "Hey",
+                    lastMessageTime = "09:55",
+                    unreadCount = 0,
+                    peerUserId = 99L
+                )
+            )
+        )
+        assertTrue(vm.uiState.value.conversations[0].isOnline)
+        assertFalse(vm.uiState.value.conversations[1].isOnline)
+
+        // Presence goes OFFLINE -> updates DIRECT conversation only
+        fakeTransport.eventsFlow.emit(ChatServerEvent.Presence(99L, "OFFLINE", "2026-11-14T10:05:00Z"))
+        assertFalse(vm.uiState.value.conversations[0].isOnline)
+        assertEquals("2026-11-14T10:05:00Z", vm.uiState.value.conversations[0].peerLastSeenAt)
+
+        // markConversationRead resets unreadCount and persists
+        vm.markConversationRead(101L)
+        assertEquals(0, vm.uiState.value.conversations[0].unreadCount)
+        assertEquals(0, fakeCache.getConversations().first { it.id == 101L }.unreadCount)
+
+        // Background incoming message -> increments unread and sends DELIVERED once
+        val bgMsg = ChatServerEvent.MessageCreated(
+            id = 5001L,
+            clientMessageId = "c-5001",
+            conversationId = 101L,
+            senderId = 99L,
+            type = MessageType.TEXT,
+            content = "Ping",
+            createdAt = "2026-11-14T10:06:00Z"
+        )
+        fakeTransport.eventsFlow.emit(bgMsg)
+        fakeTransport.eventsFlow.emit(bgMsg) // duplicate should not send second receipt
+        assertEquals(listOf("101:5001:DELIVERED"), fakeTransport.sentReceipts)
+        assertEquals(2, vm.uiState.value.conversations[0].unreadCount)
+
+        // Own message or active room message -> no DELIVERED receipt and no unread increment
+        fakeTransport.eventsFlow.emit(
+            ChatServerEvent.MessageCreated(
+                id = 5002L,
+                clientMessageId = "c-5002",
+                conversationId = 101L,
+                senderId = 42L,
+                type = MessageType.TEXT,
+                content = "Own echo",
+                createdAt = "2026-11-14T10:07:00Z"
+            )
+        )
+        vm.setActiveConversation(202L)
+        fakeTransport.eventsFlow.emit(
+            ChatServerEvent.MessageCreated(
+                id = 5003L,
+                clientMessageId = "c-5003",
+                conversationId = 202L,
+                senderId = 99L,
+                type = MessageType.TEXT,
+                content = "Active room msg",
+                createdAt = "2026-11-14T10:08:00Z"
+            )
+        )
+        assertEquals(listOf("101:5001:DELIVERED"), fakeTransport.sentReceipts)
+        assertEquals(2, vm.uiState.value.conversations[0].unreadCount)
+        assertEquals(0, vm.uiState.value.conversations[1].unreadCount)
+    }
+
+    @Test
+    fun chatRoomViewModelScopesPresenceAndAutoSendsReadReceiptsOncePerUnreadPeerMessage() = runTest {
+        val fakeTransport = FakeChatRealtimeTransport()
+        val fakeApi = FakeChatApiService(
+            customMessages = listOf(
+                MessageUiModel(
+                    localId = "peer-1",
+                    serverId = 10L,
+                    clientMessageId = "peer-1",
+                    conversationId = 101L,
+                    senderId = 99L,
+                    isFromCurrentUser = false,
+                    content = "Unread from peer",
+                    createdAt = "2026-11-14T10:00:00Z",
+                    deliveryStatus = MessageDeliveryStatus.DELIVERED
+                ),
+                MessageUiModel(
+                    localId = "peer-read",
+                    serverId = 11L,
+                    clientMessageId = "peer-read",
+                    conversationId = 101L,
+                    senderId = 99L,
+                    isFromCurrentUser = false,
+                    content = "Already read",
+                    createdAt = "2026-11-14T10:01:00Z",
+                    deliveryStatus = MessageDeliveryStatus.READ
+                ),
+                MessageUiModel(
+                    localId = "mine-1",
+                    serverId = 12L,
+                    clientMessageId = "mine-1",
+                    conversationId = 101L,
+                    senderId = 42L,
+                    isFromCurrentUser = true,
+                    content = "My message",
+                    createdAt = "2026-11-14T10:02:00Z",
+                    deliveryStatus = MessageDeliveryStatus.ACCEPTED
+                )
+            )
+        )
+        val vm = ChatRoomViewModel(transport = fakeTransport, apiService = fakeApi)
+        fakeTransport.connectionStateFlow.value = WsConnectionState.CONNECTED
+
+        vm.openConversation(
+            conversationId = 101L,
+            title = "Peer 99",
+            isGroup = false,
+            currentUserId = 42L,
+            peerUserId = 99L,
+            initialPeerOnline = false,
+            initialPeerLastSeenAt = "2026-11-14T09:50:00Z"
+        )
+
+        // Presence from unrelated peer 88 is ignored; matching peer 99 updates state
+        fakeTransport.eventsFlow.emit(ChatServerEvent.Presence(88L, "ONLINE", "2026-11-14T10:00:00Z"))
+        assertFalse(vm.uiState.value.isPeerOnline)
+        fakeTransport.eventsFlow.emit(ChatServerEvent.Presence(99L, "ONLINE", "2026-11-14T10:03:00Z"))
+        assertTrue(vm.uiState.value.isPeerOnline)
+
+        // History load sends READ only for unread peer message 10
+        vm.loadInitialHistory("http://localhost:8080", "tok", currentUserId = 42L)
+        assertEquals(listOf("101:10:READ"), fakeTransport.sentReceipts)
+
+        // Incoming peer MessageCreated sends READ once
+        val incoming = ChatServerEvent.MessageCreated(
+            id = 13L,
+            clientMessageId = "peer-13",
+            conversationId = 101L,
+            senderId = 99L,
+            type = MessageType.TEXT,
+            content = "Live msg",
+            createdAt = "2026-11-14T10:04:00Z"
+        )
+        fakeTransport.eventsFlow.emit(incoming)
+        fakeTransport.eventsFlow.emit(incoming)
+        assertEquals(listOf("101:10:READ", "101:13:READ"), fakeTransport.sentReceipts)
+
+        // Echo receipt from currentUserId is ignored
+        fakeTransport.eventsFlow.emit(
+            ChatServerEvent.Receipt(101L, 12L, 42L, MessageDeliveryStatus.READ, "2026-11-14T10:05:00Z")
+        )
+        assertEquals(
+            MessageDeliveryStatus.ACCEPTED,
+            vm.uiState.value.messages.first { it.serverId == 12L }.deliveryStatus
+        )
+
+        // After leaving room, no READ receipt is sent for new messages and Presence is ignored
+        vm.clearActiveConversation()
+        fakeTransport.eventsFlow.emit(ChatServerEvent.Presence(99L, "OFFLINE", "2026-11-14T10:06:00Z"))
+        assertTrue(vm.uiState.value.isPeerOnline)
+        fakeTransport.eventsFlow.emit(
+            ChatServerEvent.MessageCreated(
+                id = 14L,
+                clientMessageId = "peer-14",
+                conversationId = 101L,
+                senderId = 99L,
+                type = MessageType.TEXT,
+                content = "While away",
+                createdAt = "2026-11-14T10:07:00Z"
+            )
+        )
+        assertEquals(listOf("101:10:READ", "101:13:READ"), fakeTransport.sentReceipts)
+
+        // Group chat ignores Presence events
+        vm.openConversation(conversationId = 303L, title = "Group", isGroup = true, currentUserId = 42L)
+        fakeTransport.eventsFlow.emit(ChatServerEvent.Presence(99L, "ONLINE", "2026-11-14T10:08:00Z"))
+        assertFalse(vm.uiState.value.isPeerOnline)
+    }
+
+    @Test
+    fun chatRoomViewModelFlushesReadReceiptsWhenTransportReconnects() = runTest {
+        val fakeTransport = FakeChatRealtimeTransport()
+        val fakeApi = FakeChatApiService(
+            customMessages = listOf(
+                MessageUiModel(
+                    localId = "offline-peer-1",
+                    serverId = 77L,
+                    clientMessageId = "offline-peer-1",
+                    conversationId = 101L,
+                    senderId = 99L,
+                    isFromCurrentUser = false,
+                    content = "Fetched while disconnected",
+                    createdAt = "2026-11-14T10:00:00Z",
+                    deliveryStatus = MessageDeliveryStatus.DELIVERED
+                )
+            )
+        )
+        val vm = ChatRoomViewModel(transport = fakeTransport, apiService = fakeApi)
+        vm.openConversation(conversationId = 101L, title = "Peer 99", currentUserId = 42L, peerUserId = 99L)
+        vm.loadInitialHistory("http://localhost:8080", "tok", currentUserId = 42L)
+        assertTrue(fakeTransport.sentReceipts.isEmpty())
+
+        fakeTransport.connectionStateFlow.value = WsConnectionState.CONNECTED
+        assertEquals(listOf("101:77:READ"), fakeTransport.sentReceipts)
+    }
+
     private class FakeChatRealtimeTransport : ChatRealtimeTransport {
         val connectionStateFlow = MutableStateFlow(WsConnectionState.DISCONNECTED)
         val eventsFlow = MutableSharedFlow<ChatServerEvent>(extraBufferCapacity = 16)
         val sentMessages = mutableListOf<String>()
+        val sentReceipts = mutableListOf<String>()
 
         override val connectionState: StateFlow<WsConnectionState> = connectionStateFlow
         override val events: SharedFlow<ChatServerEvent> = eventsFlow
@@ -437,10 +667,15 @@ class ChatViewModelsTest {
             conversationId: Long,
             messageId: Long,
             status: MessageDeliveryStatus
-        ): Boolean = true
+        ): Boolean {
+            sentReceipts += "$conversationId:$messageId:${status.name}"
+            return true
+        }
     }
 
-    private class FakeChatApiService : ChatApiService {
+    private class FakeChatApiService(
+        private val customMessages: List<MessageUiModel>? = null
+    ) : ChatApiService {
         override suspend fun listConversations(
             baseUrl: String,
             accessToken: String,
@@ -488,6 +723,15 @@ class ChatViewModelsTest {
             cursor: String?,
             limit: Int
         ): Result<CursorPageResult<MessageUiModel>> {
+            if (customMessages != null) {
+                return Result.success(
+                    CursorPageResult(
+                        items = customMessages,
+                        nextCursor = null,
+                        hasMore = false
+                    )
+                )
+            }
             return if (cursor == null) {
                 Result.success(
                     CursorPageResult(

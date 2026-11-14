@@ -33,8 +33,10 @@ class ChatRoomViewModel(
     val uiState: StateFlow<ChatRoomUiState> = _uiState.asStateFlow()
 
     private var activeCurrentUserId: Long = 0L
+    private var currentOpenConversationId: Long? = null
     private var typingDebounceJob: Job? = null
     private val typingExpiryJobs = mutableMapOf<Long, Job>()
+    private val sentReadReceiptIds = mutableSetOf<Long>()
 
     init {
         if (transport != null) {
@@ -44,6 +46,7 @@ class ChatRoomViewModel(
                     onConnectionStateChanged(state)
                     if (state == WsConnectionState.CONNECTED && previous != WsConnectionState.CONNECTED) {
                         retryPendingMessages()
+                        sendReadReceiptsForUnread(_uiState.value.messages)
                     }
                 }
             }
@@ -59,23 +62,53 @@ class ChatRoomViewModel(
         conversationId: Long,
         title: String,
         isGroup: Boolean = false,
-        currentUserId: Long = activeCurrentUserId
+        currentUserId: Long = activeCurrentUserId,
+        peerUserId: Long? = null,
+        initialPeerOnline: Boolean = false,
+        initialPeerLastSeenAt: String? = null
     ) {
         if (currentUserId > 0L) {
             activeCurrentUserId = currentUserId
         }
+        val isReenteringOrSwitching = currentOpenConversationId != conversationId
+        currentOpenConversationId = conversationId
         _uiState.update { state ->
             if (state.conversationId == conversationId) {
-                state.copy(conversationTitle = title, isGroup = isGroup)
+                state.copy(
+                    conversationTitle = title,
+                    isGroup = isGroup,
+                    peerUserId = peerUserId ?: state.peerUserId,
+                    isPeerOnline = when {
+                        isGroup -> false
+                        isReenteringOrSwitching -> initialPeerOnline
+                        else -> state.isPeerOnline
+                    },
+                    peerLastSeenAt = when {
+                        isGroup -> null
+                        isReenteringOrSwitching -> initialPeerLastSeenAt ?: state.peerLastSeenAt
+                        else -> state.peerLastSeenAt
+                    }
+                )
             } else {
                 ChatRoomUiState(
                     conversationId = conversationId,
                     conversationTitle = title,
                     isGroup = isGroup,
+                    peerUserId = peerUserId,
+                    isPeerOnline = if (isGroup) false else initialPeerOnline,
+                    peerLastSeenAt = if (isGroup) null else initialPeerLastSeenAt,
                     connectionState = state.connectionState
                 )
             }
         }
+        sendReadReceiptsForUnread(_uiState.value.messages)
+    }
+
+    fun clearActiveConversation() {
+        currentOpenConversationId = null
+        typingDebounceJob?.cancel()
+        typingExpiryJobs.values.forEach { it.cancel() }
+        typingExpiryJobs.clear()
     }
 
     fun loadInitialHistory(baseUrl: String, accessToken: String, currentUserId: Long, limit: Int = 30) {
@@ -88,9 +121,14 @@ class ChatRoomViewModel(
                 .getOrDefault(emptyList())
             if (cached.isNotEmpty() && _uiState.value.messages.isEmpty()) {
                 _uiState.update { it.copy(messages = cached) }
+                sendReadReceiptsForUnread(cached)
             }
 
             val service = apiService ?: return@launch
+            val currentState = _uiState.value
+            if (!currentState.isGroup && currentState.peerUserId == null) {
+                resolvePeerUserIdIfNeeded(baseUrl, accessToken, conversationId, currentUserId, service)
+            }
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
             service.listMessages(
                 baseUrl = baseUrl,
@@ -110,6 +148,7 @@ class ChatRoomViewModel(
                         errorMessage = null
                     )
                 }
+                sendReadReceiptsForUnread(_uiState.value.messages)
                 runCatching { localCache?.saveMessages(conversationId, _uiState.value.messages) }
             }.onFailure { err ->
                 _uiState.update {
@@ -146,6 +185,7 @@ class ChatRoomViewModel(
                         nextHistoryCursor = page.nextCursor
                     )
                 }
+                sendReadReceiptsForUnread(_uiState.value.messages)
                 runCatching { localCache?.saveMessages(conversationId, _uiState.value.messages) }
             }.onFailure { err ->
                 _uiState.update {
@@ -590,6 +630,7 @@ class ChatRoomViewModel(
 
             is ChatServerEvent.MessageCreated -> {
                 if (event.conversationId != currentConversationId) return
+                val isFromCurrentUser = activeCurrentUserId > 0L && event.senderId == activeCurrentUserId
                 _uiState.update { state ->
                     val existingIndex = state.messages.indexOfFirst { msg ->
                         msg.clientMessageId == event.clientMessageId ||
@@ -617,7 +658,7 @@ class ChatRoomViewModel(
                             clientMessageId = event.clientMessageId,
                             conversationId = event.conversationId,
                             senderId = event.senderId,
-                            isFromCurrentUser = activeCurrentUserId > 0L && event.senderId == activeCurrentUserId,
+                            isFromCurrentUser = isFromCurrentUser,
                             type = event.type,
                             content = event.content,
                             createdAt = event.createdAt,
@@ -628,10 +669,14 @@ class ChatRoomViewModel(
                     }
                 }
                 persistCurrentMessages()
+                if (!isFromCurrentUser) {
+                    sendReadReceiptsForUnread(_uiState.value.messages)
+                }
             }
 
             is ChatServerEvent.Receipt -> {
                 if (event.conversationId != currentConversationId) return
+                if (activeCurrentUserId > 0L && event.userId == activeCurrentUserId) return
                 _uiState.update { state ->
                     state.copy(
                         messages = state.messages.map { msg ->
@@ -647,11 +692,16 @@ class ChatRoomViewModel(
             }
 
             is ChatServerEvent.Presence -> {
-                if (event.userId != activeCurrentUserId) {
+                val state = _uiState.value
+                if (currentOpenConversationId != null &&
+                    !state.isGroup &&
+                    event.userId != activeCurrentUserId &&
+                    (state.peerUserId == null || event.userId == state.peerUserId)
+                ) {
                     _uiState.update {
                         it.copy(
                             isPeerOnline = event.status.equals("ONLINE", ignoreCase = true),
-                            peerLastSeenAt = event.lastSeenAt
+                            peerLastSeenAt = event.lastSeenAt.takeIf { ts -> ts.isNotBlank() } ?: it.peerLastSeenAt
                         )
                     }
                 }
@@ -757,6 +807,51 @@ class ChatRoomViewModel(
         MessageDeliveryStatus.ACCEPTED -> 2
         MessageDeliveryStatus.DELIVERED -> 3
         MessageDeliveryStatus.READ -> 4
+    }
+
+    private fun sendReadReceiptsForUnread(messages: List<MessageUiModel>) {
+        val activeTransport = transport ?: return
+        if (activeTransport.connectionState.value != WsConnectionState.CONNECTED) return
+        val conversationId = currentOpenConversationId ?: return
+        if (conversationId <= 0L || conversationId != _uiState.value.conversationId) return
+
+        for (msg in messages) {
+            val serverId = msg.serverId ?: continue
+            if (!msg.isFromCurrentUser &&
+                msg.conversationId == conversationId &&
+                serverId > 0L &&
+                msg.deliveryStatus != MessageDeliveryStatus.READ &&
+                serverId !in sentReadReceiptIds
+            ) {
+                if (markMessageRead(serverId)) {
+                    sentReadReceiptIds += serverId
+                }
+            }
+        }
+    }
+
+    private fun resolvePeerUserIdIfNeeded(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long,
+        currentUserId: Long,
+        service: ChatApiService
+    ) {
+        viewModelScope.launch {
+            service.listGroupMembers(baseUrl, accessToken, conversationId)
+                .onSuccess { members ->
+                    val resolvedPeerId = members.firstOrNull { it.userId != currentUserId }?.userId
+                    if (resolvedPeerId != null) {
+                        _uiState.update { state ->
+                            if (state.conversationId == conversationId && !state.isGroup && state.peerUserId == null) {
+                                state.copy(peerUserId = resolvedPeerId)
+                            } else {
+                                state
+                            }
+                        }
+                    }
+                }
+        }
     }
 
     private fun persistCurrentMessages() {

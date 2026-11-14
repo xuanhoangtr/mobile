@@ -172,4 +172,37 @@ class ChatRealtimeParserTest {
         assertEquals("OFFER", decoded.signalType)
         assertEquals("v=0", decoded.sdpOrCandidate)
     }
+
+    @Test
+    fun encodeReceiptAndDecodePresenceEvent() {
+        val encoded = ChatRealtimeParser.encodeReceipt(
+            conversationId = 101L,
+            messageId = 88L,
+            status = MessageDeliveryStatus.DELIVERED,
+            requestId = "req-rcpt",
+            timestamp = "2026-11-14T10:00:00Z"
+        )
+        val root = JSONObject(encoded)
+        assertEquals("receipt", root.getString("type"))
+        val payload = root.getJSONObject("payload")
+        assertEquals(101L, payload.getLong("conversationId"))
+        assertEquals(88L, payload.getLong("messageId"))
+        assertEquals("DELIVERED", payload.getString("status"))
+
+        val presenceJson = """
+            {
+              "type": "presence",
+              "payload": {
+                "userId": 77,
+                "status": "OFFLINE",
+                "lastSeenAt": "2026-11-14T09:59:00Z"
+              }
+            }
+        """.trimIndent()
+        val presence = ChatRealtimeParser.decodeEvent(presenceJson) as? ChatServerEvent.Presence
+        assertNotNull(presence)
+        assertEquals(77L, presence!!.userId)
+        assertEquals("OFFLINE", presence.status)
+        assertEquals("2026-11-14T09:59:00Z", presence.lastSeenAt)
+    }
 }

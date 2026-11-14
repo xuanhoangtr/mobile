@@ -44,6 +44,12 @@ class SqliteChatLocalCache(context: Context) : ChatLocalCache {
                         put("unread_count", item.unreadCount)
                         put("is_pinned", if (item.isPinned) 1 else 0)
                         put("is_online", if (item.isOnline) 1 else 0)
+                        if (item.peerUserId != null) {
+                            put("peer_user_id", item.peerUserId)
+                        } else {
+                            putNull("peer_user_id")
+                        }
+                        put("peer_last_seen_at", item.peerLastSeenAt)
                     }
                     db.insertWithOnConflict(
                         TABLE_CONVERSATIONS,
@@ -63,7 +69,7 @@ class SqliteChatLocalCache(context: Context) : ChatLocalCache {
         val db = dbHelper.readableDatabase
         val items = mutableListOf<ConversationUiModel>()
         db.rawQuery(
-            "SELECT id, type, title, last_preview, last_time, unread_count, is_pinned, is_online FROM $TABLE_CONVERSATIONS ORDER BY is_pinned DESC, id DESC",
+            "SELECT id, type, title, last_preview, last_time, unread_count, is_pinned, is_online, peer_user_id, peer_last_seen_at FROM $TABLE_CONVERSATIONS ORDER BY is_pinned DESC, id DESC",
             null
         ).use { cursor ->
             while (cursor.moveToNext()) {
@@ -76,7 +82,9 @@ class SqliteChatLocalCache(context: Context) : ChatLocalCache {
                     lastMessageTime = cursor.getString(4),
                     unreadCount = cursor.getInt(5),
                     isPinned = cursor.getInt(6) == 1,
-                    isOnline = cursor.getInt(7) == 1
+                    isOnline = cursor.getInt(7) == 1,
+                    peerUserId = if (cursor.isNull(8)) null else cursor.getLong(8),
+                    peerLastSeenAt = if (cursor.isNull(9)) null else cursor.getString(9)
                 )
             }
         }
@@ -174,7 +182,9 @@ class SqliteChatLocalCache(context: Context) : ChatLocalCache {
                         last_time TEXT,
                         unread_count INTEGER NOT NULL DEFAULT 0,
                         is_pinned INTEGER NOT NULL DEFAULT 0,
-                        is_online INTEGER NOT NULL DEFAULT 0
+                        is_online INTEGER NOT NULL DEFAULT 0,
+                        peer_user_id INTEGER,
+                        peer_last_seen_at TEXT
                     )
                 """.trimIndent()
             )
@@ -200,15 +210,20 @@ class SqliteChatLocalCache(context: Context) : ChatLocalCache {
         }
 
         override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-            db.execSQL("DROP TABLE IF EXISTS $TABLE_MESSAGES")
-            db.execSQL("DROP TABLE IF EXISTS $TABLE_CONVERSATIONS")
-            onCreate(db)
+            if (oldVersion < 2) {
+                runCatching {
+                    db.execSQL("ALTER TABLE $TABLE_CONVERSATIONS ADD COLUMN peer_user_id INTEGER")
+                }
+                runCatching {
+                    db.execSQL("ALTER TABLE $TABLE_CONVERSATIONS ADD COLUMN peer_last_seen_at TEXT")
+                }
+            }
         }
     }
 
     private companion object {
         const val DB_NAME = "chat_local_cache.db"
-        const val DB_VERSION = 1
+        const val DB_VERSION = 2
         const val TABLE_CONVERSATIONS = "cached_conversations"
         const val TABLE_MESSAGES = "cached_messages"
     }

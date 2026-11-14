@@ -1,6 +1,7 @@
 package vn.edu.hcmute.androidchat.feature.chat.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -115,18 +116,29 @@ fun ChatRoomScreen(
                 },
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .background(ChatStitchTokens.SoftBlueContainer),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = uiState.conversationTitle.firstOrNull()?.uppercase() ?: "?",
-                                color = ChatStitchTokens.BrandBlue,
-                                fontWeight = FontWeight.Bold
-                            )
+                        Box(contentAlignment = Alignment.BottomEnd) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(ChatStitchTokens.SoftBlueContainer),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = uiState.conversationTitle.firstOrNull()?.uppercase() ?: "?",
+                                    color = ChatStitchTokens.BrandBlue,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            if (!uiState.isGroup && uiState.isPeerOnline) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(10.dp)
+                                        .clip(CircleShape)
+                                        .background(ChatStitchTokens.OnlineGreen)
+                                        .border(1.5.dp, ChatStitchTokens.CardWhite, CircleShape)
+                                )
+                            }
                         }
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
@@ -138,9 +150,10 @@ fun ChatRoomScreen(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
+                            val subtitleInfo = roomSubtitleInfo(uiState)
                             Text(
-                                text = connectionLabel(uiState.connectionState),
-                                color = ChatStitchTokens.TextMuted,
+                                text = subtitleInfo.first,
+                                color = subtitleInfo.second,
                                 fontSize = 12.sp
                             )
                         }
@@ -462,6 +475,28 @@ private fun statusLabel(status: MessageDeliveryStatus): String = when (status) {
     MessageDeliveryStatus.DELIVERED -> stringResource(R.string.chat_status_delivered)
     MessageDeliveryStatus.READ -> stringResource(R.string.chat_status_read)
     MessageDeliveryStatus.FAILED -> stringResource(R.string.chat_status_failed)
+}
+
+@Composable
+private fun roomSubtitleInfo(uiState: ChatRoomUiState): Pair<String, Color> {
+    if (uiState.connectionState != WsConnectionState.CONNECTED) {
+        return connectionLabel(uiState.connectionState) to ChatStitchTokens.TextMuted
+    }
+    if (uiState.isGroup) {
+        return stringResource(R.string.chat_group_subtitle) to ChatStitchTokens.TextMuted
+    }
+    if (uiState.isPeerOnline) {
+        return stringResource(R.string.chat_presence_online) to ChatStitchTokens.OnlineGreen
+    }
+    val formattedLastSeen = ChatTimeFormatter.formatLastSeen(
+        isoTimestamp = uiState.peerLastSeenAt,
+        yesterdayLabel = stringResource(R.string.chat_date_yesterday)
+    )
+    return if (formattedLastSeen != null) {
+        stringResource(R.string.chat_presence_last_seen, formattedLastSeen) to ChatStitchTokens.TextMuted
+    } else {
+        stringResource(R.string.chat_presence_offline) to ChatStitchTokens.TextMuted
+    }
 }
 
 @Composable

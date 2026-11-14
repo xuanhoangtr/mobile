@@ -7,6 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import vn.edu.hcmute.androidchat.feature.chat.data.ChatRestParser
 import vn.edu.hcmute.androidchat.feature.chat.model.ConversationType
+import vn.edu.hcmute.androidchat.feature.chat.model.MessageDeliveryStatus
 import vn.edu.hcmute.androidchat.feature.chat.model.MessageType
 
 class ChatRestParserTest {
@@ -117,5 +118,92 @@ class ChatRestParserTest {
         assertEquals("OWNER", members[0].role.name)
         assertEquals("User #2", members[1].displayName)
         assertEquals("ADMIN", members[1].role.name)
+    }
+
+    @Test
+    fun parseConversationSummaryReadsPresenceAndPeerUserId() {
+        val raw = """
+            {
+              "items": [
+                {
+                  "id": 101,
+                  "type": "DIRECT",
+                  "name": "Peer A",
+                  "peerUserId": 77,
+                  "isOnline": true,
+                  "peerLastSeenAt": "2026-11-14T08:30:00Z",
+                  "unreadCount": 1
+                },
+                {
+                  "id": 102,
+                  "type": "GROUP",
+                  "name": "Team",
+                  "peerUserId": null,
+                  "isOnline": false,
+                  "peerLastSeenAt": null,
+                  "unreadCount": 0
+                }
+              ],
+              "nextCursor": null,
+              "hasMore": false
+            }
+        """.trimIndent()
+
+        val page = ChatRestParser.parseConversationsPage(raw)
+        assertEquals(2, page.items.size)
+        assertEquals(77L, page.items[0].peerUserId)
+        assertTrue(page.items[0].isOnline)
+        assertEquals("2026-11-14T08:30:00Z", page.items[0].peerLastSeenAt)
+
+        assertNull(page.items[1].peerUserId)
+        assertFalse(page.items[1].isOnline)
+        assertNull(page.items[1].peerLastSeenAt)
+    }
+
+    @Test
+    fun parseMessagesPageParsesDeliveryStatusWithDeliveredFallback() {
+        val raw = """
+            {
+              "items": [
+                {
+                  "id": 1,
+                  "clientMessageId": "c1",
+                  "conversationId": 10,
+                  "senderId": 42,
+                  "type": "TEXT",
+                  "content": "read msg",
+                  "createdAt": "2026-11-14T08:00:00Z",
+                  "deliveryStatus": "READ"
+                },
+                {
+                  "id": 2,
+                  "clientMessageId": "c2",
+                  "conversationId": 10,
+                  "senderId": 42,
+                  "type": "TEXT",
+                  "content": "accepted msg",
+                  "createdAt": "2026-11-14T08:01:00Z",
+                  "deliveryStatus": "ACCEPTED"
+                },
+                {
+                  "id": 3,
+                  "clientMessageId": "c3",
+                  "conversationId": 10,
+                  "senderId": 99,
+                  "type": "TEXT",
+                  "content": "default msg",
+                  "createdAt": "2026-11-14T08:02:00Z",
+                  "deliveryStatus": null
+                }
+              ],
+              "nextCursor": null,
+              "hasMore": false
+            }
+        """.trimIndent()
+
+        val page = ChatRestParser.parseMessagesPage(raw, currentUserId = 42L)
+        assertEquals(MessageDeliveryStatus.READ, page.items[0].deliveryStatus)
+        assertEquals(MessageDeliveryStatus.ACCEPTED, page.items[1].deliveryStatus)
+        assertEquals(MessageDeliveryStatus.DELIVERED, page.items[2].deliveryStatus)
     }
 }
