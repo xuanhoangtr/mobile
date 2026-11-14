@@ -76,6 +76,13 @@ class AuthRoutesTest {
         }
         assertEquals(HttpStatusCode.Unauthorized, incorrectPassword.status)
 
+        val unknownEmail = client.post("/auth/login") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"email":"unknown@example.com","password":"wrong-password"}""")
+        }
+        assertEquals(incorrectPassword.status, unknownEmail.status)
+        assertEquals(incorrectPassword.bodyAsText(), unknownEmail.bodyAsText())
+
         val me = client.get("/users/me") { bearerAuth(registered.accessToken) }
         assertEquals(HttpStatusCode.OK, me.status)
         assertTrue(me.bodyAsText().contains("huy@example.com"))

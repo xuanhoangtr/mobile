@@ -34,6 +34,13 @@ class AuthSessionManager internal constructor(
 
     override suspend fun refreshAfterUnauthorized(): String? = refreshMutex.withLock {
         val credentials = readStore() ?: return@withLock null
+        if (
+            credentials.session.isRevoked ||
+            credentials.session.refreshTokenExpiresAtEpochMillis <= currentTimeMillis()
+        ) {
+            clearStore()
+            return@withLock null
+        }
         refreshLocked(credentials)
     }
 

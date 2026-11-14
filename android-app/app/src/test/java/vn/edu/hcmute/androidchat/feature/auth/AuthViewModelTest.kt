@@ -2,6 +2,7 @@ package vn.edu.hcmute.androidchat.feature.auth
 
 import kotlinx.coroutines.Dispatchers
 import vn.edu.hcmute.androidchat.feature.auth.data.AuthRepository
+import vn.edu.hcmute.androidchat.feature.auth.data.AuthNetworkException
 import vn.edu.hcmute.androidchat.feature.auth.model.AuthResult
 import vn.edu.hcmute.androidchat.feature.auth.model.User
 import vn.edu.hcmute.androidchat.feature.auth.validation.AuthValidation
@@ -115,6 +116,40 @@ class AuthViewModelTest {
         assertNull(viewModel.uiState.value.authenticatedUser)
         assertEquals("", viewModel.uiState.value.password)
     }
+
+    @Test
+    fun logoutFailureKeepsAuthenticatedUserAndShowsFailureState() {
+        val repository = FakeAuthRepository().apply { logoutResult = false }
+        val viewModel = authenticatedViewModel(repository)
+
+        viewModel.logout()
+
+        assertEquals(repository.loginResult, viewModel.uiState.value.authenticatedUser)
+        assertEquals("logout_failed", viewModel.uiState.value.errorMessage)
+        assertFalse(viewModel.uiState.value.isLoading)
+    }
+
+    @Test
+    fun logoutNetworkFailureKeepsAuthenticatedUserAndShowsNetworkError() {
+        val repository = FakeAuthRepository().apply {
+            logoutFailure = AuthNetworkException("Connection lost", IllegalStateException("socket closed"))
+        }
+        val viewModel = authenticatedViewModel(repository)
+
+        viewModel.logout()
+
+        assertEquals(repository.loginResult, viewModel.uiState.value.authenticatedUser)
+        assertEquals("network_unavailable", viewModel.uiState.value.errorMessage)
+        assertFalse(viewModel.uiState.value.isLoading)
+    }
+
+    private fun authenticatedViewModel(repository: FakeAuthRepository): AuthViewModel {
+        val viewModel = AuthViewModel(repository, Dispatchers.Unconfined)
+        viewModel.onEmailChanged("test@example.com")
+        viewModel.onPasswordChanged("strong-password-123")
+        viewModel.submit()
+        return viewModel
+    }
 }
 
 private class FakeAuthRepository : AuthRepository {
@@ -123,6 +158,8 @@ private class FakeAuthRepository : AuthRepository {
     var profileUpdateCalls = 0
     var loginResult = AuthResult(User(1L, "test@example.com", "test_user", "Test"), "test-session")
     var restoredResult: AuthResult? = null
+    var logoutResult = true
+    var logoutFailure: Throwable? = null
 
     override suspend fun register(email: String, password: String, displayName: String, username: String): AuthResult {
         registerCalls += 1
@@ -134,7 +171,10 @@ private class FakeAuthRepository : AuthRepository {
         return loginResult
     }
 
-    override suspend fun logout() = true
+    override suspend fun logout(): Boolean {
+        logoutFailure?.let { throw it }
+        return logoutResult
+    }
 
     override suspend fun currentUser() = loginResult.user
 
