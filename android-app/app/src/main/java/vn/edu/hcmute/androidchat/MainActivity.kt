@@ -255,7 +255,10 @@ class MainActivity : ComponentActivity() {
                                     currentRoute = SkeletonRoute.CREATE_GROUP
                                 },
                                 onContactsClick = { currentRoute = SkeletonRoute.CONTACTS },
-                                onProfileClick = { currentRoute = SkeletonRoute.PROFILE_SETTINGS }
+                                onProfileClick = { currentRoute = SkeletonRoute.PROFILE_SETTINGS },
+                                currentUserAvatarUrl = authState.authenticatedUser?.user?.avatarUrl,
+                                currentUserDisplayName = authState.authenticatedUser?.user?.displayName.orEmpty(),
+                                avatarBaseUrl = backendBaseUrl
                             )
                         }
 
@@ -462,7 +465,9 @@ class MainActivity : ComponentActivity() {
                             languagePreference = languagePreference,
                             onLanguagePreferenceChanged = { preference ->
                                 settingsScope.launch { appSettingsStore.setLanguagePreference(preference) }
-                            }
+                            },
+                            avatarBaseUrl = backendBaseUrl,
+                            onUploadAvatar = authViewModel::uploadAvatar
                         )
 
                         SkeletonRoute.MEDIA_PICKER -> {

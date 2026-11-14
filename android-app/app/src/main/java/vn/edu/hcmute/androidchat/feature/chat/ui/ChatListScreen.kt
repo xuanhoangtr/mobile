@@ -57,6 +57,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import vn.edu.hcmute.androidchat.R
+import vn.edu.hcmute.androidchat.feature.auth.ui.UserAvatar
 import vn.edu.hcmute.androidchat.feature.chat.model.ChatListUiState
 import vn.edu.hcmute.androidchat.feature.chat.model.ConversationType
 import vn.edu.hcmute.androidchat.feature.chat.model.ConversationUiModel
@@ -83,7 +84,10 @@ fun ChatListScreen(
     onCreateGroupClick: () -> Unit,
     onContactsClick: () -> Unit = {},
     onProfileClick: () -> Unit = {},
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    currentUserAvatarUrl: String? = null,
+    currentUserDisplayName: String = "",
+    avatarBaseUrl: String = ""
 ) {
     var selectedFilter by rememberSaveable { mutableStateOf(ChatFilterTab.ALL) }
 
@@ -105,18 +109,28 @@ fun ChatListScreen(
                 ),
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(32.dp)
-                                .clip(CircleShape)
-                                .background(ChatStitchTokens.BrandBlue),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "C",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold
+                        if (!currentUserAvatarUrl.isNullOrBlank() && avatarBaseUrl.isNotBlank()) {
+                            UserAvatar(
+                                avatarUrl = currentUserAvatarUrl,
+                                displayName = currentUserDisplayName.ifBlank { "C" },
+                                baseUrl = avatarBaseUrl,
+                                size = 32.dp,
+                                containerColor = ChatStitchTokens.BrandBlue
                             )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .clip(CircleShape)
+                                    .background(ChatStitchTokens.BrandBlue),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = currentUserDisplayName.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "C",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
