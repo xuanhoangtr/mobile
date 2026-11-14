@@ -1,6 +1,7 @@
 package vn.edu.hcmute.androidchat.feature.auth
 
 import kotlinx.coroutines.Dispatchers
+import vn.edu.hcmute.androidchat.feature.auth.data.AuthHttpException
 import vn.edu.hcmute.androidchat.feature.auth.data.AuthRepository
 import vn.edu.hcmute.androidchat.feature.auth.data.AuthNetworkException
 import vn.edu.hcmute.androidchat.feature.auth.model.AuthResult
@@ -21,6 +22,7 @@ class AuthViewModelTest {
         assertEquals("invalid_email", AuthValidation.emailError("not-an-email"))
         assertNull(AuthValidation.passwordError("strong-pass-123"))
         assertEquals("password_too_short", AuthValidation.passwordError("short"))
+        assertNull(AuthValidation.passwordError("é".repeat(36)))
         assertEquals("password_too_long", AuthValidation.passwordError("é".repeat(37)))
         assertNull(AuthValidation.usernameError("huy_dc7"))
         assertEquals("invalid_username", AuthValidation.usernameError("ab"))
@@ -56,6 +58,40 @@ class AuthViewModelTest {
         assertEquals("", viewModel.uiState.value.password)
         assertFalse(viewModel.uiState.value.isLoading)
         assertFalse(viewModel.uiState.value.isRestoringSession)
+    }
+
+    @Test
+    fun invalidCredentialsAreShownWithoutAuthenticating() {
+        val repository = FakeAuthRepository().apply {
+            loginFailure = AuthHttpException(401)
+        }
+        val viewModel = AuthViewModel(repository, Dispatchers.Unconfined)
+        viewModel.onEmailChanged("huy@example.com")
+        viewModel.onPasswordChanged("strong-password-123")
+
+        viewModel.submit()
+
+        assertEquals("invalid_credentials", viewModel.uiState.value.errorMessage)
+        assertNull(viewModel.uiState.value.authenticatedUser)
+        assertFalse(viewModel.uiState.value.isLoading)
+    }
+
+    @Test
+    fun registerSuccessClearsPasswordAndEmitsAuthenticatedUser() {
+        val repository = FakeAuthRepository()
+        val viewModel = AuthViewModel(repository, Dispatchers.Unconfined)
+        viewModel.onEmailChanged("huy@example.com")
+        viewModel.onPasswordChanged("strong-password-123")
+        viewModel.onUsernameChanged("huy_dc7")
+        viewModel.onDisplayNameChanged("Huy")
+        viewModel.setMode(AuthFormMode.REGISTER)
+
+        viewModel.submit()
+
+        assertEquals(1, repository.registerCalls)
+        assertEquals(repository.loginResult, viewModel.uiState.value.authenticatedUser)
+        assertEquals("", viewModel.uiState.value.password)
+        assertFalse(viewModel.uiState.value.isLoading)
     }
 
     @Test
@@ -101,6 +137,25 @@ class AuthViewModelTest {
         assertEquals("AUTH owner", viewModel.uiState.value.authenticatedUser?.user?.bio)
         assertTrue(viewModel.uiState.value.profileSaved)
         assertEquals(1, repository.profileUpdateCalls)
+    }
+
+    @Test
+    fun invalidProfileFieldsAreRejectedBeforeRepositoryCall() {
+        val repository = FakeAuthRepository()
+        val viewModel = authenticatedViewModel(repository)
+
+        viewModel.onProfileDisplayNameChanged("   ")
+        viewModel.saveProfile()
+
+        assertEquals("invalid_display_name", viewModel.uiState.value.validationError)
+        assertEquals(0, repository.profileUpdateCalls)
+
+        viewModel.onProfileDisplayNameChanged("Valid Name")
+        viewModel.onProfileBioChanged("b".repeat(161))
+        viewModel.saveProfile()
+
+        assertEquals("bio_too_long", viewModel.uiState.value.validationError)
+        assertEquals(0, repository.profileUpdateCalls)
     }
 
     @Test
@@ -157,6 +212,7 @@ private class FakeAuthRepository : AuthRepository {
     var registerCalls = 0
     var profileUpdateCalls = 0
     var loginResult = AuthResult(User(1L, "test@example.com", "test_user", "Test"), "test-session")
+    var loginFailure: Throwable? = null
     var restoredResult: AuthResult? = null
     var logoutResult = true
     var logoutFailure: Throwable? = null
@@ -168,6 +224,7 @@ private class FakeAuthRepository : AuthRepository {
 
     override suspend fun login(email: String, password: String): AuthResult {
         loginCalls += 1
+        loginFailure?.let { throw it }
         return loginResult
     }
 

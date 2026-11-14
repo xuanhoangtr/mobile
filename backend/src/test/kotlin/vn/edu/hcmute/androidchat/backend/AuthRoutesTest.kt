@@ -70,6 +70,18 @@ class AuthRoutesTest {
         assertTrue(registered.refreshToken.isNotBlank())
         assertFalse(registration.bodyAsText().contains("strong-password-123"))
 
+        val duplicateEmail = client.post("/auth/register") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"email":"huy@example.com","username":"another_user","password":"strong-password-456","displayName":"Another Huy"}""")
+        }
+        assertEquals(HttpStatusCode.Conflict, duplicateEmail.status)
+
+        val duplicateUsername = client.post("/auth/register") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"email":"another@example.com","username":"huydc7","password":"strong-password-456","displayName":"Another Huy"}""")
+        }
+        assertEquals(HttpStatusCode.Conflict, duplicateUsername.status)
+
         val incorrectPassword = client.post("/auth/login") {
             contentType(ContentType.Application.Json)
             setBody("""{"email":"huy@example.com","password":"wrong-password"}""")
@@ -133,6 +145,42 @@ class AuthRoutesTest {
             setBody("""{"refreshToken":"${refreshed.refreshToken}"}""")
         }
         assertEquals(HttpStatusCode.Unauthorized, revokedRefresh.status)
+    }
+
+    @Test
+    fun profileReadAndUpdateAreScopedToAuthenticatedUser() = testApplication {
+        application { module(testConfig, InMemoryAuthRepository()) }
+        val firstUser = client.register("first@example.com", "first_user", "First User")
+        val secondUser = client.register("second@example.com", "second_user", "Second User")
+
+        val firstProfile = client.get("/users/me") { bearerAuth(firstUser.accessToken) }
+        val secondProfile = client.get("/users/me") { bearerAuth(secondUser.accessToken) }
+        assertEquals(HttpStatusCode.OK, firstProfile.status)
+        assertEquals(HttpStatusCode.OK, secondProfile.status)
+        assertTrue(firstProfile.bodyAsText().contains("first@example.com"))
+        assertTrue(firstProfile.bodyAsText().contains("First User"))
+        assertFalse(firstProfile.bodyAsText().contains("second@example.com"))
+        assertTrue(secondProfile.bodyAsText().contains("second@example.com"))
+        assertTrue(secondProfile.bodyAsText().contains("Second User"))
+        assertFalse(secondProfile.bodyAsText().contains("first@example.com"))
+
+        val update = client.patch("/users/me") {
+            bearerAuth(firstUser.accessToken)
+            contentType(ContentType.Application.Json)
+            setBody("""{"displayName":"Updated First","bio":"private profile note"}""")
+        }
+        assertEquals(HttpStatusCode.OK, update.status)
+        assertTrue(update.bodyAsText().contains("Updated First"))
+        assertTrue(update.bodyAsText().contains("private profile note"))
+
+        val firstAfterUpdate = client.get("/users/me") { bearerAuth(firstUser.accessToken) }
+        val secondAfterUpdate = client.get("/users/me") { bearerAuth(secondUser.accessToken) }
+        assertEquals(HttpStatusCode.OK, firstAfterUpdate.status)
+        assertEquals(HttpStatusCode.OK, secondAfterUpdate.status)
+        assertTrue(firstAfterUpdate.bodyAsText().contains("Updated First"))
+        assertTrue(firstAfterUpdate.bodyAsText().contains("private profile note"))
+        assertTrue(secondAfterUpdate.bodyAsText().contains("Second User"))
+        assertFalse(secondAfterUpdate.bodyAsText().contains("private profile note"))
     }
 
     @Test
