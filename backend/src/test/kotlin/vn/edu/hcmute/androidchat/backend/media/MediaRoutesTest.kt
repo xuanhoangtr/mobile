@@ -25,7 +25,9 @@ import kotlin.test.*
 class MediaRoutesTest {
     private val config = AppConfig("test", 8080, null, null, null, "media-unit-test-key-not-for-runtime", "media-test", "media-client")
     private fun token(user: Long = 7) = JWT.create().withIssuer(config.jwtIssuer).withAudience(config.jwtAudience)
-        .withSubject(user.toString()).withExpiresAt(Instant.now().plusSeconds(300))
+        .withSubject(user.toString())
+        .withClaim("sid", java.util.UUID.randomUUID().toString())
+        .withExpiresAt(Instant.now().plusSeconds(300))
         .sign(Algorithm.HMAC256(config.jwtSecret))
 
     private fun fixture(

@@ -86,7 +86,9 @@ class CallRoutesTest {
 
     private fun token(userId: Long): String =
         JWT.create().withIssuer(config.jwtIssuer).withAudience(config.jwtAudience)
-            .withSubject(userId.toString()).withExpiresAt(Instant.now().plusSeconds(300))
+            .withSubject(userId.toString())
+            .withClaim("sid", java.util.UUID.randomUUID().toString())
+            .withExpiresAt(Instant.now().plusSeconds(300))
             .sign(Algorithm.HMAC256(config.jwtSecret))
 
     private fun String.parseJsonObject(): JsonObject =

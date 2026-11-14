@@ -27,7 +27,9 @@ import kotlin.test.assertTrue
 class MediaNettyUploadTest {
     private val config = AppConfig("test", 8080, null, null, null, "media-netty-test-key-not-for-runtime", "media-test", "media-client")
     private fun token() = JWT.create().withIssuer(config.jwtIssuer).withAudience(config.jwtAudience)
-        .withSubject("7").withExpiresAt(Instant.now().plusSeconds(300))
+        .withSubject("7")
+        .withClaim("sid", java.util.UUID.randomUUID().toString())
+        .withExpiresAt(Instant.now().plusSeconds(300))
         .sign(Algorithm.HMAC256(config.jwtSecret))
 
     private fun withNetty(uploadTimeoutMillis: Long = 60_000, block: suspend (Path, MediaService, Int) -> Unit) = runBlocking {

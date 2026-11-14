@@ -44,7 +44,7 @@ class ApplicationTest {
         jwtAudience = "android-chat-clients"
     )
 
-    private fun issueTestToken(userId: Long, sessionId: UUID? = null): String =
+    private fun issueTestToken(userId: Long, sessionId: UUID? = UUID.randomUUID()): String =
         JWT.create()
             .withIssuer(testConfig.jwtIssuer)
             .withAudience(testConfig.jwtAudience)

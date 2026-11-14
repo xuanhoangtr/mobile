@@ -31,7 +31,9 @@ class PushTokenRoutesTest {
                 configureMediaFoundation(config, MediaService(LocalMediaStorage(root)))
             }
             val token = JWT.create().withIssuer(config.jwtIssuer).withAudience(config.jwtAudience)
-                .withSubject("7").withExpiresAt(Instant.now().plusSeconds(300))
+                .withSubject("7")
+                .withClaim("sid", java.util.UUID.randomUUID().toString())
+                .withExpiresAt(Instant.now().plusSeconds(300))
                 .sign(Algorithm.HMAC256(config.jwtSecret))
             val body = """{"deviceId":"device-1","token":"provider-secret-token","enabled":true}"""
             assertEquals(HttpStatusCode.Unauthorized, client.post("/devices/push-token") {
@@ -64,7 +66,9 @@ class PushTokenRoutesTest {
                 configureMediaFoundation(config, MediaService(LocalMediaStorage(root)))
             }
             val token = JWT.create().withIssuer(config.jwtIssuer).withAudience(config.jwtAudience)
-                .withSubject("7").sign(Algorithm.HMAC256(config.jwtSecret))
+                .withSubject("7")
+                .withClaim("sid", java.util.UUID.randomUUID().toString())
+                .sign(Algorithm.HMAC256(config.jwtSecret))
             val response = client.post("/devices/push-token") {
                 bearerAuth(token)
                 contentType(ContentType.Application.Json)

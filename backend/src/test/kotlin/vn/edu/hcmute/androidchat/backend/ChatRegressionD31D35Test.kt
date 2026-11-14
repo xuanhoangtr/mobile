@@ -47,6 +47,7 @@ class ChatRegressionD31D35Test {
             .withIssuer(testConfig.jwtIssuer)
             .withAudience(testConfig.jwtAudience)
             .withSubject(userId.toString())
+            .withClaim("sid", java.util.UUID.randomUUID().toString())
             .sign(Algorithm.HMAC256(testConfig.jwtSecret))
 
     @Test

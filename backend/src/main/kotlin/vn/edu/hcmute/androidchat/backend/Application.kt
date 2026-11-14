@@ -51,8 +51,12 @@ fun main() {
 }
 
 /** Configures Ktor plugins, JWT authentication, health route, and module routing. */
-fun Application.module(
-    config: AppConfig = AppConfig.fromEnv(),
+fun Application.module(config: AppConfig = AppConfig.fromEnv()) {
+    module(config, authRepositoryOverride = null, chatRepositoryOverride = null)
+}
+
+internal fun Application.module(
+    config: AppConfig,
     authRepositoryOverride: AuthRepository? = null,
     chatRepositoryOverride: ChatRepository? = null
 ) {
@@ -109,7 +113,9 @@ fun Application.module(
 
     val authService = AuthService(authRepositoryOverride ?: PostgresAuthRepository(dbManager), config)
     configureJwtAuth(config)
-    installAuthSessionValidation(config, authService)
+    if (authRepositoryOverride != null || dbManager.dataSource != null) {
+        installAuthSessionValidation(config, authService)
+    }
     configureMediaFoundation(config)
 
     routing {
