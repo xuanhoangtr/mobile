@@ -172,7 +172,9 @@ class OkHttpChatWebSocketClient(
         conversationId: Long,
         content: String,
         type: MessageType,
-        replyToId: Long?
+        replyToId: Long?,
+        mediaRef: Long?,
+        metadataJson: String?
     ): Boolean {
         val socket = activeSocket ?: return false
         val frame = ChatRealtimeParser.encodeMessageSend(
@@ -180,7 +182,9 @@ class OkHttpChatWebSocketClient(
             conversationId = conversationId,
             content = content,
             type = type,
-            replyToId = replyToId
+            replyToId = replyToId,
+            mediaRef = mediaRef,
+            metadataJson = metadataJson
         )
         return socket.send(frame)
     }

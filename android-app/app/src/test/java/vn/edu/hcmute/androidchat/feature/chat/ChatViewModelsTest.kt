@@ -639,11 +639,123 @@ class ChatViewModelsTest {
         assertEquals(listOf("101:77:READ"), fakeTransport.sentReceipts)
     }
 
+    @Test
+    fun chatRoomViewModelHandlesAttachmentsDeleteCallSignalEditDraftAndGroupTypingNames() = runTest {
+        val fakeTransport = FakeChatRealtimeTransport()
+        val fakeApi = FakeChatApiService(
+            groupMembers = listOf(
+                vn.edu.hcmute.androidchat.feature.groups.model.GroupMemberUiModel(42L, "Me"),
+                vn.edu.hcmute.androidchat.feature.groups.model.GroupMemberUiModel(99L, "Quang Huy")
+            )
+        )
+        val vm = ChatRoomViewModel(transport = fakeTransport, apiService = fakeApi)
+        fakeTransport.connectionStateFlow.value = WsConnectionState.CONNECTED
+        vm.openConversation(conversationId = 202L, title = "Group 202", isGroup = true, currentUserId = 42L)
+        vm.loadInitialHistory("http://localhost:8080", "tok", currentUserId = 42L)
+
+        // Group typing uses member display name
+        fakeTransport.eventsFlow.emit(ChatServerEvent.Typing(202L, 99L, true, 5_000L))
+        assertEquals(listOf("Quang Huy"), vm.uiState.value.typingUserNames)
+
+        // Enqueue media, location, and sticker messages -> dispatches typing(false) + attachment metadata
+        val mediaMsg = vm.queueOutgoingMediaMessage(
+            currentUserId = 42L,
+            mediaId = 55L,
+            fileName = "photo.jpg",
+            mimeType = "image/jpeg",
+            byteSize = 1024L,
+            createdAtLabel = "12:00"
+        )!!
+        assertEquals(MessageType.IMAGE, mediaMsg.type)
+        assertEquals(55L, mediaMsg.mediaRef)
+        assertTrue(mediaMsg.metadataJson?.contains("photo.jpg") == true)
+
+        val locMsg = vm.queueOutgoingLocationMessage(
+            currentUserId = 42L,
+            latitude = 10.8505,
+            longitude = 106.7717,
+            label = "HCMUTE",
+            createdAtLabel = "12:01"
+        )!!
+        assertEquals(MessageType.LOCATION, locMsg.type)
+        assertTrue(locMsg.metadataJson?.contains("10.8505") == true)
+
+        val stickerMsg = vm.queueOutgoingStickerMessage(
+            currentUserId = 42L,
+            stickerId = "fire",
+            unicode = "🔥",
+            label = "Fire",
+            createdAtLabel = "12:02"
+        )!!
+        assertEquals(MessageType.STICKER, stickerMsg.type)
+        assertEquals("🔥", stickerMsg.content)
+
+        // Sending stops typing indicator
+        assertTrue(fakeTransport.sentTypingEvents.any { it == (202L to false) })
+
+        // Edit preserves pre-edit draft on cancel and clears replyingToMessage on start
+        val existingMsg = vm.uiState.value.messages.first { it.serverId == 3L }
+        vm.setReplyingTo(existingMsg)
+        vm.onDraftChanged("unsent draft")
+        vm.startEditing(existingMsg)
+        assertNull(vm.uiState.value.replyingToMessage)
+        assertEquals("msg-3", vm.uiState.value.draftText)
+        vm.startEditing(null)
+        assertNull(vm.uiState.value.editingMessage)
+        assertEquals("unsent draft", vm.uiState.value.draftText)
+
+        // Call signal delegates to transport
+        assertTrue(vm.sendCallSignal(callId = "call-1", signalType = "OFFER", targetUserId = 99L, sdpOrCandidate = "sdp"))
+        assertEquals(1, fakeTransport.sentCallSignals.size)
+
+        // Delete message removes locally & handles MessageDeleted WS event
+        vm.deleteMessage("http://localhost:8080", "tok", 3L)
+        assertFalse(vm.uiState.value.messages.any { it.serverId == 3L })
+        fakeTransport.eventsFlow.emit(ChatServerEvent.MessageDeleted(202L, 4L, 42L))
+        assertFalse(vm.uiState.value.messages.any { it.serverId == 4L })
+
+        // clearActiveConversation sends typing(false)
+        fakeTransport.sentTypingEvents.clear()
+        vm.clearActiveConversation()
+        assertEquals(listOf(202L to false), fakeTransport.sentTypingEvents)
+    }
+
+    @Test
+    fun chatListViewModelUpdatesPreviewOnMessageUpdatedAndRecalledAndSearchesGlobalMessages() = runTest {
+        val fakeTransport = FakeChatRealtimeTransport()
+        val fakeApi = FakeChatApiService()
+        val vm = ChatListViewModel(transport = fakeTransport, apiService = fakeApi)
+        vm.setConversations(
+            listOf(
+                ConversationUiModel(
+                    id = 202L,
+                    type = ConversationType.DIRECT,
+                    title = "Cong Huy",
+                    lastMessagePreview = "Original",
+                    lastMessageTime = "10:00"
+                )
+            )
+        )
+
+        fakeTransport.eventsFlow.emit(ChatServerEvent.MessageUpdated(202L, 3L, "Updated text", "10:01"))
+        assertEquals("Updated text", vm.uiState.value.conversations.single().lastMessagePreview)
+
+        fakeTransport.eventsFlow.emit(ChatServerEvent.MessageRecalled(202L, 3L, "10:02"))
+        assertEquals("Tin nhắn đã được thu hồi", vm.uiState.value.conversations.single().lastMessagePreview)
+
+        vm.searchGlobalMessages("http://localhost:8080", "tok", "kotlin")
+        assertEquals(1, vm.uiState.value.searchMessageResults.size)
+        vm.onSearchQueryChanged("")
+        assertTrue(vm.uiState.value.searchMessageResults.isEmpty())
+    }
+
     private class FakeChatRealtimeTransport : ChatRealtimeTransport {
         val connectionStateFlow = MutableStateFlow(WsConnectionState.DISCONNECTED)
         val eventsFlow = MutableSharedFlow<ChatServerEvent>(extraBufferCapacity = 16)
         val sentMessages = mutableListOf<String>()
         val sentReceipts = mutableListOf<String>()
+        val sentTypingEvents = mutableListOf<Pair<Long, Boolean>>()
+        val sentCallSignals = mutableListOf<String>()
 
         override val connectionState: StateFlow<WsConnectionState> = connectionStateFlow
         override val events: SharedFlow<ChatServerEvent> = eventsFlow
@@ -656,13 +768,19 @@ class ChatViewModelsTest {
             conversationId: Long,
             content: String,
             type: MessageType,
-            replyToId: Long?
+            replyToId: Long?,
+            mediaRef: Long?,
+            metadataJson: String?
         ): Boolean {
             sentMessages += "$conversationId:$clientMessageId:$content"
             return true
         }
 
-        override fun sendTyping(conversationId: Long, isTyping: Boolean): Boolean = true
+        override fun sendTyping(conversationId: Long, isTyping: Boolean): Boolean {
+            sentTypingEvents += conversationId to isTyping
+            return true
+        }
+
         override fun sendReceipt(
             conversationId: Long,
             messageId: Long,
@@ -671,10 +789,22 @@ class ChatViewModelsTest {
             sentReceipts += "$conversationId:$messageId:${status.name}"
             return true
         }
+
+        override fun sendCallSignal(
+            conversationId: Long,
+            callId: String,
+            signalType: String,
+            targetUserId: Long?,
+            sdpOrCandidate: String?
+        ): Boolean {
+            sentCallSignals += "$conversationId:$callId:$signalType"
+            return true
+        }
     }
 
     private class FakeChatApiService(
-        private val customMessages: List<MessageUiModel>? = null
+        private val customMessages: List<MessageUiModel>? = null,
+        private val groupMembers: List<vn.edu.hcmute.androidchat.feature.groups.model.GroupMemberUiModel> = emptyList()
     ) : ChatApiService {
         override suspend fun listConversations(
             baseUrl: String,
@@ -777,7 +907,7 @@ class ChatViewModelsTest {
         ) = Result.failure<ConversationUiModel>(UnsupportedOperationException())
 
         override suspend fun listGroupMembers(baseUrl: String, accessToken: String, conversationId: Long) =
-            Result.success(emptyList<vn.edu.hcmute.androidchat.feature.groups.model.GroupMemberUiModel>())
+            Result.success(groupMembers)
 
         override suspend fun addGroupMembers(
             baseUrl: String,
@@ -883,6 +1013,12 @@ class ChatViewModelsTest {
             conversationId: Long,
             messageId: Long
         ) = Result.success(Unit)
+
+        override suspend fun deleteMessage(
+            baseUrl: String,
+            accessToken: String,
+            messageId: Long
+        ) = Result.success(true)
     }
 
     private class FakeChatLocalCache : ChatLocalCache {

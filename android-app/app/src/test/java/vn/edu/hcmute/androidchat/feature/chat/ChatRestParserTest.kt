@@ -206,4 +206,40 @@ class ChatRestParserTest {
         assertEquals(MessageDeliveryStatus.ACCEPTED, page.items[1].deliveryStatus)
         assertEquals(MessageDeliveryStatus.DELIVERED, page.items[2].deliveryStatus)
     }
+
+    @Test
+    fun parseMessageDtoReadsReactionsMediaRefMetadataAndGroupMemberProfile() {
+        val raw = """
+            {
+              "items": [
+                {
+                  "id": 55,
+                  "clientMessageId": "c-55",
+                  "conversationId": 10,
+                  "senderId": 99,
+                  "type": "FILE",
+                  "content": "report.pdf",
+                  "mediaRef": 321,
+                  "forwardedFromId": 12,
+                  "metadata": {"fileName":"report.pdf","byteSize":2048},
+                  "reactions": {"👍":[42, 99], "❤️":[77]},
+                  "createdAt": "2026-11-14T09:00:00Z"
+                }
+              ],
+              "nextCursor": null,
+              "hasMore": false
+            }
+        """.trimIndent()
+        val msg = ChatRestParser.parseMessagesPage(raw, currentUserId = 42L).items.single()
+        assertEquals(321L, msg.mediaRef)
+        assertEquals(12L, msg.forwardedFromId)
+        assertTrue(msg.metadataJson?.contains("report.pdf") == true)
+        assertEquals(mapOf("👍" to 2, "❤️" to 1), msg.reactionCounts)
+        assertEquals(setOf("👍"), msg.myReactions)
+
+        val memberRaw = """[{"userId":7,"role":"ADMIN","displayName":"Nguyen An","avatarUrl":"/avatars/7.png"}]"""
+        val member = ChatRestParser.parseGroupMembers(memberRaw).single()
+        assertEquals("Nguyen An", member.displayName)
+        assertEquals("/avatars/7.png", member.avatarUrl)
+    }
 }

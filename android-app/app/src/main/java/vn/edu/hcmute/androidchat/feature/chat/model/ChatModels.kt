@@ -60,7 +60,10 @@ data class MessageUiModel(
     val forwardedFromId: Long? = null,
     val isEdited: Boolean = false,
     val isRecalled: Boolean = false,
-    val reactionCounts: Map<String, Int> = emptyMap()
+    val reactionCounts: Map<String, Int> = emptyMap(),
+    val mediaRef: Long? = null,
+    val metadataJson: String? = null,
+    val myReactions: Set<String> = emptySet()
 )
 
 data class ChatListUiState(
@@ -68,7 +71,8 @@ data class ChatListUiState(
     val conversations: List<ConversationUiModel> = emptyList(),
     val searchQuery: String = "",
     val connectionState: WsConnectionState = WsConnectionState.DISCONNECTED,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val searchMessageResults: List<MessageUiModel> = emptyList()
 ) {
     val visibleConversations: List<ConversationUiModel>
         get() {
@@ -104,5 +108,6 @@ data class ChatRoomUiState(
     val isPeerOnline: Boolean = false,
     val peerLastSeenAt: String? = null,
     val connectionState: WsConnectionState = WsConnectionState.DISCONNECTED,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val memberNamesByUserId: Map<Long, String> = emptyMap()
 )

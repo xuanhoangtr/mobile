@@ -205,4 +205,61 @@ class ChatRealtimeParserTest {
         assertEquals("OFFLINE", presence.status)
         assertEquals("2026-11-14T09:59:00Z", presence.lastSeenAt)
     }
+
+    @Test
+    fun encodeMessageSendIncludesMediaRefAndMetadataAndDecodesNewServerEvents() {
+        val encoded = ChatRealtimeParser.encodeMessageSend(
+            clientMessageId = "c-media-1",
+            conversationId = 101L,
+            content = "10.77, 106.66",
+            type = MessageType.LOCATION,
+            mediaRef = 777L,
+            metadataJson = """{"latitude":10.77,"longitude":106.66,"label":"HCMUTE"}""",
+            requestId = "req-m1",
+            timestamp = "2026-11-14T12:00:00Z"
+        )
+        val payload = JSONObject(encoded).getJSONObject("payload")
+        assertEquals(777L, payload.getLong("mediaRef"))
+        assertEquals("HCMUTE", payload.getJSONObject("metadata").getString("label"))
+
+        val createdJson = """
+            {
+              "type": "message.created",
+              "payload": {
+                "id": 9100,
+                "clientMessageId": "c-media-1",
+                "conversationId": 101,
+                "senderId": 42,
+                "type": "IMAGE",
+                "content": "pic.jpg",
+                "mediaRef": 888,
+                "forwardedFromId": 500,
+                "metadata": {"fileName":"pic.jpg","mimeType":"image/jpeg"},
+                "createdAt": "2026-11-14T12:01:00Z"
+              }
+            }
+        """.trimIndent()
+        val created = ChatRealtimeParser.decodeEvent(createdJson) as? ChatServerEvent.MessageCreated
+        assertNotNull(created)
+        assertEquals(888L, created!!.mediaRef)
+        assertEquals(500L, created.forwardedFromId)
+        assertEquals("pic.jpg", JSONObject(created.metadataJson!!).getString("fileName"))
+
+        val pinnedJson = """{"type":"message.pinned","payload":{"conversationId":101,"messageId":9100,"pinned":true,"pinnedMessageIds":[9100,800]}}"""
+        val pinned = ChatRealtimeParser.decodeEvent(pinnedJson) as? ChatServerEvent.MessagePinned
+        assertNotNull(pinned)
+        assertTrue(pinned!!.pinned)
+        assertEquals(listOf(9100L, 800L), pinned.pinnedMessageIds)
+
+        val deletedJson = """{"type":"message.deleted","payload":{"conversationId":101,"messageId":9100,"userId":42}}"""
+        val deleted = ChatRealtimeParser.decodeEvent(deletedJson) as? ChatServerEvent.MessageDeleted
+        assertNotNull(deleted)
+        assertEquals(9100L, deleted!!.messageId)
+        assertEquals(42L, deleted.userId)
+
+        val membersChangedJson = """{"type":"group.members_changed","payload":{"conversationId":500}}"""
+        val changed = ChatRealtimeParser.decodeEvent(membersChangedJson) as? ChatServerEvent.GroupMembersChanged
+        assertNotNull(changed)
+        assertEquals(500L, changed!!.conversationId)
+    }
 }

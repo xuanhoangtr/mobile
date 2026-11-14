@@ -148,6 +148,12 @@ interface ChatApiService {
         conversationId: Long,
         messageId: Long
     ): Result<Unit>
+
+    suspend fun deleteMessage(
+        baseUrl: String,
+        accessToken: String,
+        messageId: Long
+    ): Result<Boolean> = Result.success(true)
 }
 
 object ChatRestParser {
@@ -225,6 +231,13 @@ object ChatRestParser {
         val editedAt = obj.optString("editedAt").takeIf { it.isNotBlank() && it != "null" }
         val replyToId = if (obj.has("replyToId") && !obj.isNull("replyToId")) obj.getLong("replyToId") else null
         val forwardedFromId = if (obj.has("forwardedFromId") && !obj.isNull("forwardedFromId")) obj.getLong("forwardedFromId") else null
+        val mediaRef = if (obj.has("mediaRef") && !obj.isNull("mediaRef")) {
+            obj.optLong("mediaRef", 0L).takeIf { it > 0L }
+        } else {
+            null
+        }
+        val metadataJson = ChatRealtimeParser.extractMetadataJson(obj)
+        val (reactionCounts, myReactions) = parseReactions(obj.optJSONObject("reactions"), currentUserId)
         val deliveryStatusRaw = if (obj.has("deliveryStatus") && !obj.isNull("deliveryStatus")) {
             obj.optString("deliveryStatus").takeIf { it.isNotBlank() && it != "null" }
         } else {
@@ -248,8 +261,46 @@ object ChatRestParser {
             replyToId = replyToId,
             forwardedFromId = forwardedFromId,
             isEdited = editedAt != null,
-            isRecalled = deletedAt != null
+            isRecalled = deletedAt != null,
+            reactionCounts = reactionCounts,
+            mediaRef = mediaRef,
+            metadataJson = metadataJson,
+            myReactions = myReactions
         )
+    }
+
+    private fun parseReactions(
+        reactionsObj: JSONObject?,
+        currentUserId: Long
+    ): Pair<Map<String, Int>, Set<String>> {
+        if (reactionsObj == null) return emptyMap<String, Int>() to emptySet()
+        val counts = linkedMapOf<String, Int>()
+        val mine = linkedSetOf<String>()
+        val keys = reactionsObj.keys()
+        while (keys.hasNext()) {
+            val emoji = keys.next()
+            val userIds = reactionsObj.optJSONArray(emoji)
+            if (userIds != null) {
+                val count = userIds.length()
+                if (count > 0) {
+                    counts[emoji] = count
+                    if (currentUserId > 0L) {
+                        for (i in 0 until count) {
+                            if (userIds.optLong(i) == currentUserId) {
+                                mine += emoji
+                                break
+                            }
+                        }
+                    }
+                }
+            } else {
+                val count = reactionsObj.optInt(emoji, 0)
+                if (count > 0) {
+                    counts[emoji] = count
+                }
+            }
+        }
+        return counts to mine
     }
 
     fun parseErrorMessage(rawJson: String?, fallback: String): String {
@@ -276,10 +327,12 @@ object ChatRestParser {
             ?: GroupRole.MEMBER
         val displayName = obj.optString("displayName").takeIf { it.isNotBlank() && it != "null" }
             ?: "User #$userId"
+        val avatarUrl = obj.optString("avatarUrl").takeIf { it.isNotBlank() && it != "null" }
         return GroupMemberUiModel(
             userId = userId,
             displayName = displayName,
-            role = role
+            role = role,
+            avatarUrl = avatarUrl
         )
     }
 }
@@ -636,6 +689,23 @@ class OkHttpChatApiService(
                 .build()
             executeRequest(request)
             Unit
+        }
+    }
+
+    override suspend fun deleteMessage(
+        baseUrl: String,
+        accessToken: String,
+        messageId: Long
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanBase = baseUrl.trimEnd('/')
+            val request = Request.Builder()
+                .url("$cleanBase/messages/$messageId")
+                .header("Authorization", "Bearer $accessToken")
+                .delete()
+                .build()
+            executeRequest(request)
+            true
         }
     }
 

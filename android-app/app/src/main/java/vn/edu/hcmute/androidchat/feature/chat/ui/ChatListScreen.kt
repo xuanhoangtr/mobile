@@ -1,7 +1,9 @@
 package vn.edu.hcmute.androidchat.feature.chat.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,17 +24,23 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChatBubble
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.People
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material3.Badge
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
@@ -61,6 +69,7 @@ import vn.edu.hcmute.androidchat.feature.auth.ui.UserAvatar
 import vn.edu.hcmute.androidchat.feature.chat.model.ChatListUiState
 import vn.edu.hcmute.androidchat.feature.chat.model.ConversationType
 import vn.edu.hcmute.androidchat.feature.chat.model.ConversationUiModel
+import vn.edu.hcmute.androidchat.feature.chat.model.MessageUiModel
 import vn.edu.hcmute.androidchat.feature.chat.model.WsConnectionState
 import vn.edu.hcmute.androidchat.ui.theme.AndroidChatTheme
 
@@ -87,7 +96,11 @@ fun ChatListScreen(
     modifier: Modifier = Modifier,
     currentUserAvatarUrl: String? = null,
     currentUserDisplayName: String = "",
-    avatarBaseUrl: String = ""
+    avatarBaseUrl: String = "",
+    onTogglePinClick: (ConversationUiModel) -> Unit = {},
+    searchMessageResults: List<MessageUiModel> = uiState.searchMessageResults,
+    onSearchMessagesClick: ((String) -> Unit)? = null,
+    onSearchMessageResultClick: ((MessageUiModel) -> Unit)? = null
 ) {
     var selectedFilter by rememberSaveable { mutableStateOf(ChatFilterTab.ALL) }
 
@@ -261,6 +274,38 @@ fun ChatListScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
+            if (uiState.searchQuery.isNotBlank() && onSearchMessagesClick != null) {
+                Surface(
+                    color = ChatStitchTokens.SoftBlueContainer,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .clickable { onSearchMessagesClick(uiState.searchQuery.trim()) }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Search,
+                            contentDescription = null,
+                            tint = ChatStitchTokens.BrandBlue,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "Tìm tin nhắn chứa \"${uiState.searchQuery.trim()}\"",
+                            color = ChatStitchTokens.BrandBlue,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+
             when {
                 uiState.isLoading -> {
                     Box(
@@ -285,7 +330,7 @@ fun ChatListScreen(
                     }
                 }
 
-                displayedConversations.isEmpty() -> {
+                displayedConversations.isEmpty() && searchMessageResults.isEmpty() -> {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -301,10 +346,44 @@ fun ChatListScreen(
 
                 else -> {
                     LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        if (searchMessageResults.isNotEmpty()) {
+                            item(key = "search_messages_header") {
+                                Text(
+                                    text = "Tin nhắn khớp (${searchMessageResults.size})",
+                                    color = ChatStitchTokens.BrandBlue,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                )
+                            }
+                            items(searchMessageResults, key = { "msg_${it.localId}_${it.serverId}" }) { msg ->
+                                GlobalSearchMessageRow(
+                                    message = msg,
+                                    conversationTitle = uiState.conversations
+                                        .firstOrNull { it.id == msg.conversationId }
+                                        ?.title
+                                        ?: "Hội thoại #${msg.conversationId}",
+                                    onClick = {
+                                        if (onSearchMessageResultClick != null) {
+                                            onSearchMessageResultClick(msg)
+                                        } else {
+                                            uiState.conversations
+                                                .firstOrNull { it.id == msg.conversationId }
+                                                ?.let(onConversationClick)
+                                        }
+                                    }
+                                )
+                                HorizontalDivider(
+                                    color = ChatStitchTokens.SoftBlueContainer,
+                                    thickness = 0.5.dp
+                                )
+                            }
+                        }
                         items(displayedConversations, key = { it.id }) { conversation ->
                             ConversationRow(
                                 conversation = conversation,
-                                onClick = { onConversationClick(conversation) }
+                                onClick = { onConversationClick(conversation) },
+                                onTogglePinClick = { onTogglePinClick(conversation) }
                             )
                             HorizontalDivider(
                                 color = ChatStitchTokens.SoftBlueContainer,
@@ -338,16 +417,23 @@ private fun ChatFilterChip(
     )
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ConversationRow(
     conversation: ConversationUiModel,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onTogglePinClick: () -> Unit = {}
 ) {
+    var menuExpanded by rememberSaveable(conversation.id) { mutableStateOf(false) }
+
     Surface(
         color = ChatStitchTokens.CardWhite,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = { menuExpanded = true }
+            )
     ) {
         Row(
             modifier = Modifier
@@ -440,8 +526,100 @@ private fun ConversationRow(
                             Text(conversation.unreadCount.toString())
                         }
                     }
+                    Box {
+                        IconButton(
+                            onClick = { menuExpanded = true },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (conversation.isPinned) {
+                                    Icons.Filled.PushPin
+                                } else {
+                                    Icons.Filled.MoreVert
+                                },
+                                contentDescription = if (conversation.isPinned) {
+                                    "Bỏ ghim hội thoại"
+                                } else {
+                                    "Tùy chọn hội thoại"
+                                },
+                                tint = if (conversation.isPinned) {
+                                    ChatStitchTokens.BrandBlue
+                                } else {
+                                    ChatStitchTokens.TextMuted
+                                },
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = menuExpanded,
+                            onDismissRequest = { menuExpanded = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (conversation.isPinned) "Bỏ ghim hội thoại"
+                                        else "Ghim hội thoại"
+                                    )
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    onTogglePinClick()
+                                }
+                            )
+                        }
+                    }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun GlobalSearchMessageRow(
+    message: MessageUiModel,
+    conversationTitle: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        color = ChatStitchTokens.CardWhite,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = conversationTitle,
+                    color = ChatStitchTokens.BrandBlue,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = ChatTimeFormatter.formatConversationListTime(message.createdAt),
+                    color = ChatStitchTokens.TextMuted,
+                    fontSize = 11.sp
+                )
+            }
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = if (message.isRecalled) "Tin nhắn đã được thu hồi" else message.content,
+                color = ChatStitchTokens.TextPrimary,
+                fontSize = 14.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }

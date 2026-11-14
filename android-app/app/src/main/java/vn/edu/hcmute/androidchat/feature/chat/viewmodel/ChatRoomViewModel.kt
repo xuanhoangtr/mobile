@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 import vn.edu.hcmute.androidchat.feature.chat.data.ChatApiService
 import vn.edu.hcmute.androidchat.feature.chat.data.ChatLocalCache
 import vn.edu.hcmute.androidchat.feature.chat.data.ChatRealtimeTransport
@@ -18,6 +19,8 @@ import vn.edu.hcmute.androidchat.feature.chat.model.MessageDeliveryStatus
 import vn.edu.hcmute.androidchat.feature.chat.model.MessageType
 import vn.edu.hcmute.androidchat.feature.chat.model.MessageUiModel
 import vn.edu.hcmute.androidchat.feature.chat.model.WsConnectionState
+import vn.edu.hcmute.androidchat.feature.groups.model.GroupMemberUiModel
+import java.util.Locale
 import java.util.UUID
 
 /**
@@ -37,6 +40,10 @@ class ChatRoomViewModel(
     private var typingDebounceJob: Job? = null
     private val typingExpiryJobs = mutableMapOf<Long, Job>()
     private val sentReadReceiptIds = mutableSetOf<Long>()
+    private var savedDraftBeforeEdit: String? = null
+    private var lastBaseUrl: String? = null
+    private var lastAccessToken: String? = null
+    private val groupMemberNamesByUserId = mutableMapOf<Long, String>()
 
     init {
         if (transport != null) {
@@ -71,6 +78,10 @@ class ChatRoomViewModel(
             activeCurrentUserId = currentUserId
         }
         val isReenteringOrSwitching = currentOpenConversationId != conversationId
+        if (isReenteringOrSwitching) {
+            groupMemberNamesByUserId.clear()
+            savedDraftBeforeEdit = null
+        }
         currentOpenConversationId = conversationId
         _uiState.update { state ->
             if (state.conversationId == conversationId) {
@@ -105,16 +116,24 @@ class ChatRoomViewModel(
     }
 
     fun clearActiveConversation() {
+        val prevConvId = currentOpenConversationId
         currentOpenConversationId = null
         typingDebounceJob?.cancel()
         typingExpiryJobs.values.forEach { it.cancel() }
         typingExpiryJobs.clear()
+        if (prevConvId != null && prevConvId > 0L &&
+            transport?.connectionState?.value == WsConnectionState.CONNECTED
+        ) {
+            transport.sendTyping(prevConvId, false)
+        }
     }
 
     fun loadInitialHistory(baseUrl: String, accessToken: String, currentUserId: Long, limit: Int = 30) {
         val conversationId = _uiState.value.conversationId
         if (conversationId <= 0L) return
         activeCurrentUserId = currentUserId
+        lastBaseUrl = baseUrl
+        lastAccessToken = accessToken
 
         viewModelScope.launch {
             val cached = runCatching { localCache?.getMessages(conversationId).orEmpty() }
@@ -128,7 +147,10 @@ class ChatRoomViewModel(
             val currentState = _uiState.value
             if (!currentState.isGroup && currentState.peerUserId == null) {
                 resolvePeerUserIdIfNeeded(baseUrl, accessToken, conversationId, currentUserId, service)
+            } else if (currentState.isGroup) {
+                loadGroupMemberNames(baseUrl, accessToken, conversationId, service)
             }
+            loadPinnedMessages(baseUrl, accessToken)
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
             service.listMessages(
                 baseUrl = baseUrl,
@@ -218,12 +240,34 @@ class ChatRoomViewModel(
         _uiState.value.messages.indexOfFirst { it.serverId == replyToId }
 
     fun startEditing(message: MessageUiModel?) {
-        _uiState.update {
-            it.copy(
-                editingMessage = message,
-                draftText = message?.content ?: ""
-            )
+        if (message != null) {
+            if (_uiState.value.editingMessage == null) {
+                savedDraftBeforeEdit = _uiState.value.draftText
+            }
+            _uiState.update {
+                it.copy(
+                    editingMessage = message,
+                    replyingToMessage = null,
+                    draftText = message.content
+                )
+            }
+        } else {
+            val wasEditing = _uiState.value.editingMessage != null
+            val restoredDraft = if (wasEditing) savedDraftBeforeEdit ?: "" else _uiState.value.draftText
+            savedDraftBeforeEdit = null
+            _uiState.update {
+                it.copy(
+                    editingMessage = null,
+                    draftText = restoredDraft
+                )
+            }
         }
+    }
+
+    fun setGroupMembers(members: List<GroupMemberUiModel>) {
+        groupMemberNamesByUserId.clear()
+        members.forEach { groupMemberNamesByUserId[it.userId] = it.displayName }
+        _uiState.update { it.copy(memberNamesByUserId = groupMemberNamesByUserId.toMap()) }
     }
 
     fun getCopyableText(message: MessageUiModel): String? {
@@ -268,13 +312,131 @@ class ChatRoomViewModel(
     ): MessageUiModel? {
         val totalSeconds = (durationMs / 1_000L).coerceAtLeast(1L)
         val durationLabel = "%d:%02d".format(totalSeconds / 60L, totalSeconds % 60L)
+        val metaJson = JSONObject().put("durationMs", durationMs).toString()
         return enqueueOutgoingMessage(
             currentUserId = currentUserId,
             content = "Tin nhắn thoại ($durationLabel) [media:$mediaId]",
             type = MessageType.VOICE,
             createdAtLabel = createdAtLabel,
             isTransportConnected = isTransportConnected,
-            clearDraft = false
+            clearDraft = false,
+            mediaRef = mediaId,
+            metadataJson = metaJson
+        )
+    }
+
+    /**
+     * Enqueues and dispatches an uploaded media attachment (`IMAGE`, `VIDEO`, `AUDIO`, or `FILE`).
+     */
+    fun queueOutgoingMediaMessage(
+        currentUserId: Long,
+        mediaId: Long,
+        fileName: String,
+        mimeType: String,
+        byteSize: Long? = null,
+        createdAtLabel: String,
+        isTransportConnected: Boolean = false
+    ): MessageUiModel? {
+        val normalized = mimeType.trim().lowercase(Locale.US)
+        val messageType = when {
+            normalized.startsWith("image/") -> MessageType.IMAGE
+            normalized.startsWith("video/") -> MessageType.VIDEO
+            normalized.startsWith("audio/") -> MessageType.AUDIO
+            else -> MessageType.FILE
+        }
+        val safeName = fileName.ifBlank { messageType.name }
+        val meta = JSONObject()
+            .put("fileName", safeName)
+            .put("mimeType", mimeType)
+        if (byteSize != null) {
+            meta.put("byteSize", byteSize)
+        }
+        return enqueueOutgoingMessage(
+            currentUserId = currentUserId,
+            content = safeName,
+            type = messageType,
+            createdAtLabel = createdAtLabel,
+            isTransportConnected = isTransportConnected,
+            clearDraft = false,
+            mediaRef = mediaId,
+            metadataJson = meta.toString()
+        )
+    }
+
+    /**
+     * Enqueues and dispatches a shared location message (`MessageType.LOCATION`).
+     */
+    fun queueOutgoingLocationMessage(
+        currentUserId: Long,
+        latitude: Double,
+        longitude: Double,
+        label: String? = null,
+        createdAtLabel: String,
+        isTransportConnected: Boolean = false
+    ): MessageUiModel? {
+        val cleanLabel = label?.trim()?.takeIf { it.isNotEmpty() }
+        val content = cleanLabel ?: String.format(Locale.US, "%.5f, %.5f", latitude, longitude)
+        val meta = JSONObject()
+            .put("latitude", latitude)
+            .put("longitude", longitude)
+        if (cleanLabel != null) {
+            meta.put("label", cleanLabel)
+        }
+        return enqueueOutgoingMessage(
+            currentUserId = currentUserId,
+            content = content,
+            type = MessageType.LOCATION,
+            createdAtLabel = createdAtLabel,
+            isTransportConnected = isTransportConnected,
+            clearDraft = false,
+            metadataJson = meta.toString()
+        )
+    }
+
+    /**
+     * Enqueues and dispatches a sticker message (`MessageType.STICKER`).
+     */
+    fun queueOutgoingStickerMessage(
+        currentUserId: Long,
+        stickerId: String,
+        unicode: String,
+        label: String = "",
+        createdAtLabel: String,
+        isTransportConnected: Boolean = false
+    ): MessageUiModel? {
+        val content = unicode.ifBlank { label.ifBlank { stickerId } }
+        val meta = JSONObject()
+            .put("stickerId", stickerId)
+            .put("unicode", unicode)
+        if (label.isNotBlank()) {
+            meta.put("label", label)
+        }
+        return enqueueOutgoingMessage(
+            currentUserId = currentUserId,
+            content = content,
+            type = MessageType.STICKER,
+            createdAtLabel = createdAtLabel,
+            isTransportConnected = isTransportConnected,
+            clearDraft = false,
+            metadataJson = meta.toString()
+        )
+    }
+
+    fun sendCallSignal(
+        callId: String,
+        signalType: String,
+        targetUserId: Long? = null,
+        sdpOrCandidate: String? = null
+    ): Boolean {
+        val activeTransport = transport ?: return false
+        val conversationId = _uiState.value.conversationId
+        if (conversationId <= 0L || callId.isBlank() || signalType.isBlank()) return false
+        return activeTransport.sendCallSignal(
+            conversationId = conversationId,
+            callId = callId,
+            signalType = signalType,
+            targetUserId = targetUserId,
+            sdpOrCandidate = sdpOrCandidate
         )
     }
 
@@ -284,7 +446,9 @@ class ChatRoomViewModel(
         type: MessageType,
         createdAtLabel: String,
         isTransportConnected: Boolean,
-        clearDraft: Boolean
+        clearDraft: Boolean,
+        mediaRef: Long? = null,
+        metadataJson: String? = null
     ): MessageUiModel? {
         val currentState = _uiState.value
         if (content.isBlank() || currentState.conversationId <= 0L) return null
@@ -295,13 +459,17 @@ class ChatRoomViewModel(
             (transport?.connectionState?.value == WsConnectionState.CONNECTED)
 
         val replyId = currentState.replyingToMessage?.serverId
+        typingDebounceJob?.cancel()
         val dispatched = if (transport != null && transportConnected) {
+            transport.sendTyping(currentState.conversationId, false)
             transport.sendMessage(
                 clientMessageId = clientMsgId,
                 conversationId = currentState.conversationId,
                 content = content,
                 type = type,
-                replyToId = replyId
+                replyToId = replyId,
+                mediaRef = mediaRef,
+                metadataJson = metadataJson
             )
         } else {
             transport == null && transportConnected
@@ -317,6 +485,8 @@ class ChatRoomViewModel(
             content = content,
             createdAt = createdAtLabel,
             replyToId = replyId,
+            mediaRef = mediaRef,
+            metadataJson = metadataJson,
             deliveryStatus = if (dispatched) {
                 MessageDeliveryStatus.SENDING
             } else {
@@ -344,7 +514,9 @@ class ChatRoomViewModel(
             conversationId = target.conversationId,
             content = target.content,
             type = target.type,
-            replyToId = target.replyToId
+            replyToId = target.replyToId,
+            mediaRef = target.mediaRef,
+            metadataJson = target.metadataJson
         )
         if (sent) {
             _uiState.update { state ->
@@ -378,7 +550,9 @@ class ChatRoomViewModel(
                 conversationId = msg.conversationId,
                 content = msg.content,
                 type = msg.type,
-                replyToId = msg.replyToId
+                replyToId = msg.replyToId,
+                mediaRef = msg.mediaRef,
+                metadataJson = msg.metadataJson
             )
             if (ok) {
                 resentIds += msg.clientMessageId
@@ -463,6 +637,7 @@ class ChatRoomViewModel(
         viewModelScope.launch {
             service.editMessage(baseUrl, accessToken, serverId, activeCurrentUserId, newContent)
                 .onSuccess { updated ->
+                    savedDraftBeforeEdit = null
                     _uiState.update { state ->
                         state.copy(
                             editingMessage = null,
@@ -478,6 +653,43 @@ class ChatRoomViewModel(
                     _uiState.update { it.copy(errorMessage = err.message ?: "Failed to edit message") }
                 }
         }
+    }
+
+    fun deleteMessage(messageId: Long) {
+        val baseUrl = lastBaseUrl
+        val accessToken = lastAccessToken
+        if (apiService != null && !baseUrl.isNullOrBlank() && !accessToken.isNullOrBlank()) {
+            deleteMessage(baseUrl, accessToken, messageId)
+        } else {
+            removeMessageLocally(messageId)
+        }
+    }
+
+    fun deleteMessage(baseUrl: String, accessToken: String, messageId: Long) {
+        if (messageId <= 0L) return
+        val service = apiService ?: run {
+            removeMessageLocally(messageId)
+            return
+        }
+        viewModelScope.launch {
+            service.deleteMessage(baseUrl, accessToken, messageId)
+                .onSuccess {
+                    removeMessageLocally(messageId)
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(errorMessage = err.message ?: "Failed to delete message") }
+                }
+        }
+    }
+
+    private fun removeMessageLocally(messageId: Long) {
+        _uiState.update { state ->
+            state.copy(
+                messages = state.messages.filterNot { it.serverId == messageId },
+                pinnedMessageIds = state.pinnedMessageIds.filterNot { it == messageId }
+            )
+        }
+        persistCurrentMessages()
     }
 
     fun recallMessage(baseUrl: String, accessToken: String, messageId: Long) {
@@ -532,8 +744,20 @@ class ChatRoomViewModel(
                 .onSuccess { counts ->
                     _uiState.update { state ->
                         state.copy(
-                            messages = state.messages.map {
-                                if (it.serverId == messageId) it.copy(reactionCounts = counts) else it
+                            messages = state.messages.map { msg ->
+                                if (msg.serverId == messageId) {
+                                    val nextMine = if (emoji in msg.myReactions) {
+                                        msg.myReactions - emoji
+                                    } else {
+                                        msg.myReactions + emoji
+                                    }
+                                    msg.copy(
+                                        reactionCounts = counts,
+                                        myReactions = nextMine.filterTo(mutableSetOf()) { (counts[it] ?: 0) > 0 }
+                                    )
+                                } else {
+                                    msg
+                                }
                             }
                         )
                     }
@@ -663,7 +887,10 @@ class ChatRoomViewModel(
                             content = event.content,
                             createdAt = event.createdAt,
                             deliveryStatus = MessageDeliveryStatus.DELIVERED,
-                            replyToId = event.replyToId
+                            replyToId = event.replyToId,
+                            forwardedFromId = event.forwardedFromId,
+                            mediaRef = event.mediaRef,
+                            metadataJson = event.metadataJson
                         )
                         state.copy(messages = state.messages + incoming)
                     }
@@ -709,7 +936,7 @@ class ChatRoomViewModel(
 
             is ChatServerEvent.Typing -> {
                 if (event.conversationId != currentConversationId || event.userId == activeCurrentUserId) return
-                val label = "User #${event.userId}"
+                val label = groupMemberNamesByUserId[event.userId] ?: "User #${event.userId}"
                 typingExpiryJobs.remove(event.userId)?.cancel()
                 if (event.isTyping) {
                     _uiState.update { state ->
@@ -757,12 +984,50 @@ class ChatRoomViewModel(
                 if (event.conversationId != currentConversationId) return
                 _uiState.update { state ->
                     state.copy(
-                        messages = state.messages.map {
-                            if (it.serverId == event.messageId) it.copy(reactionCounts = event.counts) else it
+                        messages = state.messages.map { msg ->
+                            if (msg.serverId == event.messageId) {
+                                val nextMine = if (activeCurrentUserId > 0L && event.userId == activeCurrentUserId) {
+                                    if (event.added) msg.myReactions + event.emoji else msg.myReactions - event.emoji
+                                } else {
+                                    msg.myReactions
+                                }
+                                msg.copy(reactionCounts = event.counts, myReactions = nextMine)
+                            } else {
+                                msg
+                            }
                         }
                     )
                 }
                 persistCurrentMessages()
+            }
+
+            is ChatServerEvent.MessagePinned -> {
+                if (event.conversationId != currentConversationId) return
+                _uiState.update { state ->
+                    val updatedIds = if (event.pinnedMessageIds.isNotEmpty() || !event.pinned) {
+                        event.pinnedMessageIds
+                    } else if (event.messageId > 0L && event.messageId !in state.pinnedMessageIds) {
+                        listOf(event.messageId) + state.pinnedMessageIds
+                    } else {
+                        state.pinnedMessageIds
+                    }
+                    state.copy(pinnedMessageIds = updatedIds)
+                }
+            }
+
+            is ChatServerEvent.MessageDeleted -> {
+                if (event.conversationId != currentConversationId) return
+                removeMessageLocally(event.messageId)
+            }
+
+            is ChatServerEvent.GroupMembersChanged -> {
+                if (event.conversationId != currentConversationId) return
+                val baseUrl = lastBaseUrl
+                val token = lastAccessToken
+                val service = apiService
+                if (!baseUrl.isNullOrBlank() && !token.isNullOrBlank() && service != null) {
+                    loadGroupMemberNames(baseUrl, token, event.conversationId, service)
+                }
             }
 
             is ChatServerEvent.Error -> {
@@ -827,6 +1092,22 @@ class ChatRoomViewModel(
                     sentReadReceiptIds += serverId
                 }
             }
+        }
+    }
+
+    private fun loadGroupMemberNames(
+        baseUrl: String,
+        accessToken: String,
+        conversationId: Long,
+        service: ChatApiService
+    ) {
+        viewModelScope.launch {
+            service.listGroupMembers(baseUrl, accessToken, conversationId)
+                .onSuccess { members ->
+                    if (_uiState.value.conversationId == conversationId) {
+                        setGroupMembers(members)
+                    }
+                }
         }
     }
 

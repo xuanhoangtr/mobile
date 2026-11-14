@@ -150,7 +150,34 @@ class ChatListViewModel(
     }
 
     fun onSearchQueryChanged(query: String) {
-        _uiState.update { it.copy(searchQuery = query) }
+        _uiState.update {
+            it.copy(
+                searchQuery = query,
+                searchMessageResults = if (query.isBlank()) emptyList() else it.searchMessageResults
+            )
+        }
+    }
+
+    fun searchGlobalMessages(baseUrl: String, accessToken: String, query: String) {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) {
+            _uiState.update { it.copy(searchMessageResults = emptyList()) }
+            return
+        }
+        val service = apiService ?: return
+        viewModelScope.launch {
+            service.searchMessages(
+                baseUrl = baseUrl,
+                accessToken = accessToken,
+                conversationId = null,
+                query = trimmed,
+                currentUserId = activeCurrentUserId
+            ).onSuccess { page ->
+                _uiState.update { it.copy(searchMessageResults = page.items) }
+            }.onFailure { err ->
+                setError(err.message ?: "Failed to search messages")
+            }
+        }
     }
 
     fun onConnectionStateChanged(state: WsConnectionState) {
@@ -283,8 +310,36 @@ class ChatListViewModel(
                 }
             }
 
+            is ChatServerEvent.MessageUpdated -> {
+                updateConversationPreview(event.conversationId, event.content)
+            }
+
+            is ChatServerEvent.MessageRecalled -> {
+                updateConversationPreview(event.conversationId, "Tin nhắn đã được thu hồi")
+            }
+
             is ChatServerEvent.Error -> setError(event.message)
             else -> Unit
+        }
+    }
+
+    private fun updateConversationPreview(conversationId: Long, preview: String) {
+        var changed = false
+        _uiState.update { state ->
+            val updated = state.conversations.map { item ->
+                if (item.id == conversationId) {
+                    changed = true
+                    item.copy(lastMessagePreview = preview)
+                } else {
+                    item
+                }
+            }
+            if (changed) state.copy(conversations = updated) else state
+        }
+        if (changed) {
+            viewModelScope.launch {
+                runCatching { localCache?.saveConversations(_uiState.value.conversations) }
+            }
         }
     }
 }

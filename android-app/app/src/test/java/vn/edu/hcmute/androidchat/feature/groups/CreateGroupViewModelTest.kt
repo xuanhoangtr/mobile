@@ -88,6 +88,36 @@ class CreateGroupViewModelTest {
         assertFalse(vm.uiState.value.members.any { it.userId == 3L })
     }
 
+    @Test
+    fun groupMembersViewModelComputesRolePermissionsAddableFriendsAndLeavesGroup() = runTest {
+        val fakeApi = FakeGroupChatApiService()
+        val vm = GroupMembersViewModel(apiService = fakeApi)
+        vm.setCurrentUserId(1L)
+        vm.loadMembers("http://localhost:8080", "tok", conversationId = 500L)
+        assertEquals(GroupRole.OWNER, vm.uiState.value.currentUserRole)
+        assertTrue(vm.uiState.value.canManageMembers)
+        assertTrue(vm.uiState.value.canChangeRoles)
+
+        vm.setAvailableFriends(
+            listOf(
+                GroupMemberUiModel(2L, "Peer 2"),
+                GroupMemberUiModel(4L, "Lan Anh"),
+                GroupMemberUiModel(5L, "Minh Tuan")
+            )
+        )
+        assertEquals(listOf(4L, 5L), vm.uiState.value.addableFriends.map { it.userId })
+        vm.onAddMemberQueryChanged("lan")
+        assertEquals(listOf(4L), vm.uiState.value.addableFriends.map { it.userId })
+
+        var leftCalled = false
+        vm.leaveGroup("http://localhost:8080", "tok", conversationId = 500L, currentUserId = 2L) {
+            leftCalled = true
+        }
+        assertTrue(leftCalled)
+        assertTrue(vm.uiState.value.hasLeftGroup)
+        assertFalse(vm.uiState.value.members.any { it.userId == 2L })
+    }
+
     private class FakeGroupChatApiService : ChatApiService {
         var lastMemberIds: List<Long> = emptyList()
         private val members = mutableListOf(

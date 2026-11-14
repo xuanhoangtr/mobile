@@ -9,7 +9,8 @@ enum class GroupRole {
 data class GroupMemberUiModel(
     val userId: Long,
     val displayName: String,
-    val role: GroupRole = GroupRole.MEMBER
+    val role: GroupRole = GroupRole.MEMBER,
+    val avatarUrl: String? = null
 )
 
 data class GroupCreateUiState(

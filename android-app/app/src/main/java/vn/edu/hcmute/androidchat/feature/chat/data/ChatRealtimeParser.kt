@@ -18,7 +18,9 @@ object ChatRealtimeParser {
         type: MessageType = MessageType.TEXT,
         replyToId: Long? = null,
         requestId: String = UUID.randomUUID().toString(),
-        timestamp: String = Instant.now().toString()
+        timestamp: String = Instant.now().toString(),
+        mediaRef: Long? = null,
+        metadataJson: String? = null
     ): String {
         val payload = JSONObject()
             .put("clientMessageId", clientMessageId)
@@ -27,6 +29,15 @@ object ChatRealtimeParser {
             .put("content", content)
         if (replyToId != null) {
             payload.put("replyToId", replyToId)
+        }
+        if (mediaRef != null) {
+            payload.put("mediaRef", mediaRef)
+        }
+        if (!metadataJson.isNullOrBlank()) {
+            val metaObj = runCatching { JSONObject(metadataJson) }.getOrNull()
+            if (metaObj != null) {
+                payload.put("metadata", metaObj)
+            }
         }
         return wrapEnvelope("message.send", requestId, timestamp, payload)
     }
@@ -101,11 +112,10 @@ object ChatRealtimeParser {
                     type = parseMessageType(payload.optString("type", "TEXT")),
                     content = payload.optString("content", ""),
                     createdAt = payload.optString("createdAt", ""),
-                    replyToId = if (payload.has("replyToId") && !payload.isNull("replyToId")) {
-                        payload.getLong("replyToId")
-                    } else {
-                        null
-                    }
+                    replyToId = payload.optNullableLong("replyToId"),
+                    mediaRef = payload.optNullableLong("mediaRef"),
+                    forwardedFromId = payload.optNullableLong("forwardedFromId"),
+                    metadataJson = extractMetadataJson(payload)
                 )
 
                 "typing" -> ChatServerEvent.Typing(
@@ -172,18 +182,56 @@ object ChatRealtimeParser {
                     callId = payload.getString("callId"),
                     signalType = payload.getString("signalType"),
                     fromUserId = payload.optLong("fromUserId", 0L),
-                    targetUserId = if (payload.has("targetUserId") && !payload.isNull("targetUserId")) {
-                        payload.getLong("targetUserId")
-                    } else {
-                        null
-                    },
+                    targetUserId = payload.optNullableLong("targetUserId"),
                     sdpOrCandidate = payload.optString("sdpOrCandidate").takeIf { it.isNotBlank() && it != "null" }
+                )
+
+                "message.pinned" -> {
+                    val idsArray = payload.optJSONArray("pinnedMessageIds")
+                    val pinnedIds = buildList {
+                        if (idsArray != null) {
+                            for (i in 0 until idsArray.length()) {
+                                val id = idsArray.optLong(i, 0L)
+                                if (id > 0L) add(id)
+                            }
+                        }
+                    }
+                    ChatServerEvent.MessagePinned(
+                        conversationId = payload.getLong("conversationId"),
+                        messageId = payload.optLong("messageId", 0L),
+                        pinned = payload.optBoolean("pinned", false),
+                        pinnedMessageIds = pinnedIds
+                    )
+                }
+
+                "message.deleted" -> ChatServerEvent.MessageDeleted(
+                    conversationId = payload.getLong("conversationId"),
+                    messageId = payload.getLong("messageId"),
+                    userId = payload.optLong("userId", 0L)
+                )
+
+                "group.members_changed" -> ChatServerEvent.GroupMembersChanged(
+                    conversationId = payload.getLong("conversationId")
                 )
 
                 else -> null
             }
         }.getOrNull()
     }
+
+    internal fun extractMetadataJson(obj: JSONObject): String? {
+        if (!obj.has("metadata") || obj.isNull("metadata")) return null
+        val metaObj = obj.optJSONObject("metadata")
+        if (metaObj != null) {
+            return if (metaObj.length() > 0) metaObj.toString() else null
+        }
+        return obj.optString("metadata").takeIf {
+            it.isNotBlank() && it != "null" && it != "{}"
+        }
+    }
+
+    private fun JSONObject.optNullableLong(key: String): Long? =
+        if (has(key) && !isNull(key)) optLong(key, 0L).takeIf { it > 0L } else null
 
     private fun wrapEnvelope(
         type: String,

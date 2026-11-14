@@ -23,7 +23,10 @@ sealed interface ChatServerEvent {
         val type: MessageType,
         val content: String,
         val createdAt: String,
-        val replyToId: Long? = null
+        val replyToId: Long? = null,
+        val mediaRef: Long? = null,
+        val forwardedFromId: Long? = null,
+        val metadataJson: String? = null
     ) : ChatServerEvent
 
     data class Typing(
@@ -83,6 +86,23 @@ sealed interface ChatServerEvent {
         val targetUserId: Long?,
         val sdpOrCandidate: String?
     ) : ChatServerEvent
+
+    data class MessagePinned(
+        val conversationId: Long,
+        val messageId: Long,
+        val pinned: Boolean,
+        val pinnedMessageIds: List<Long>
+    ) : ChatServerEvent
+
+    data class MessageDeleted(
+        val conversationId: Long,
+        val messageId: Long,
+        val userId: Long
+    ) : ChatServerEvent
+
+    data class GroupMembersChanged(
+        val conversationId: Long
+    ) : ChatServerEvent
 }
 
 interface ChatRealtimeTransport {
@@ -97,7 +117,9 @@ interface ChatRealtimeTransport {
         conversationId: Long,
         content: String,
         type: MessageType = MessageType.TEXT,
-        replyToId: Long? = null
+        replyToId: Long? = null,
+        mediaRef: Long? = null,
+        metadataJson: String? = null
     ): Boolean
 
     fun sendTyping(conversationId: Long, isTyping: Boolean): Boolean
