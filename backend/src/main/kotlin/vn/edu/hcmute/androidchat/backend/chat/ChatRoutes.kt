@@ -32,7 +32,8 @@ fun Route.registerChatRoutes(
                 ?: return@get call.respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", "Invalid authenticated principal")
 
             val limit = call.request.queryParameters["limit"]?.toIntOrNull()?.coerceIn(1, 100) ?: 30
-            val items = repository.listConversations(userId = userId, limit = limit)
+            val rawItems = repository.listConversations(userId = userId, limit = limit)
+            val items = enrichConversationsWithPresence(rawItems, repository, sessions)
 
             call.respond(
                 HttpStatusCode.OK,
@@ -59,10 +60,18 @@ fun Route.registerChatRoutes(
                 )
             }
 
-            val conversation = repository.getOrCreateDirectConversation(
+            val rawConversation = repository.getOrCreateDirectConversation(
                 userId = userId,
                 targetUserId = body.targetUserId,
                 nowIso = Instant.now().toString()
+            )
+            val conversation = enrichConversationsWithPresence(listOf(rawConversation), repository, sessions).first()
+            emitDirectConversationPresence(
+                userId = userId,
+                targetUserId = body.targetUserId,
+                peerLastSeenAt = conversation.peerLastSeenAt,
+                repository = repository,
+                sessions = sessions
             )
             call.respond(HttpStatusCode.OK, conversation)
         }
@@ -361,6 +370,74 @@ fun Route.registerChatRoutes(
                 is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
             }
         }
+    }
+}
+
+private suspend fun enrichConversationsWithPresence(
+    items: List<ConversationSummaryDto>,
+    repository: ChatRepository,
+    sessions: ChatSessionRegistry?
+): List<ConversationSummaryDto> {
+    val missingLastSeenPeerIds = items
+        .filter { it.type == "DIRECT" && it.peerUserId != null && it.peerLastSeenAt == null }
+        .mapNotNull { it.peerUserId }
+        .distinct()
+    val extraLastSeen = if (missingLastSeenPeerIds.isNotEmpty()) {
+        repository.getLastSeenMap(missingLastSeenPeerIds)
+    } else {
+        emptyMap()
+    }
+    return items.map { item ->
+        val peerId = item.peerUserId
+        if (item.type == "DIRECT" && peerId != null) {
+            item.copy(
+                isOnline = sessions?.isUserOnline(peerId) == true,
+                peerLastSeenAt = item.peerLastSeenAt ?: extraLastSeen[peerId]
+            )
+        } else {
+            item
+        }
+    }
+}
+
+private suspend fun emitDirectConversationPresence(
+    userId: Long,
+    targetUserId: Long,
+    peerLastSeenAt: String?,
+    repository: ChatRepository,
+    sessions: ChatSessionRegistry?
+) {
+    if (sessions == null) return
+    val nowIso = Instant.now().toString()
+    val selfOnline = sessions.isUserOnline(userId)
+    val peerOnline = sessions.isUserOnline(targetUserId)
+    val lastSeenMap = repository.getLastSeenMap(listOf(userId, targetUserId))
+    val resolvedPeerLastSeen = peerLastSeenAt ?: lastSeenMap[targetUserId]
+    val resolvedSelfLastSeen = lastSeenMap[userId]
+
+    if ((peerOnline || resolvedPeerLastSeen != null) && selfOnline) {
+        sessions.broadcastToUsers(
+            userIds = setOf(userId),
+            type = "presence",
+            requestId = null,
+            payload = PresencePayload(
+                userId = targetUserId,
+                status = if (peerOnline) "ONLINE" else "OFFLINE",
+                lastSeenAt = resolvedPeerLastSeen ?: nowIso
+            )
+        )
+    }
+    if ((selfOnline || resolvedSelfLastSeen != null) && peerOnline) {
+        sessions.broadcastToUsers(
+            userIds = setOf(targetUserId),
+            type = "presence",
+            requestId = null,
+            payload = PresencePayload(
+                userId = userId,
+                status = if (selfOnline) "ONLINE" else "OFFLINE",
+                lastSeenAt = resolvedSelfLastSeen ?: nowIso
+            )
+        )
     }
 }
 

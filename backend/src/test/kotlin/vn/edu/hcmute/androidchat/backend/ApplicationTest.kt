@@ -117,6 +117,12 @@ class ApplicationTest {
             }) {
                 val senderPresence = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
                 assertEquals("presence", senderPresence["type"]?.jsonPrimitive?.content)
+                assertEquals(42L, senderPresence["payload"]?.jsonObject?.get("userId")?.jsonPrimitive?.long)
+
+                val initialPeerPresence = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
+                assertEquals("presence", initialPeerPresence["type"]?.jsonPrimitive?.content)
+                assertEquals(99L, initialPeerPresence["payload"]?.jsonObject?.get("userId")?.jsonPrimitive?.long)
+                assertEquals("ONLINE", initialPeerPresence["payload"]?.jsonObject?.get("status")?.jsonPrimitive?.content)
 
                 val sendJson = """
                     {
@@ -349,6 +355,11 @@ class ApplicationTest {
     fun webSocketEnforcesMonotonicReceiptsFromReadToDelivered() = testApplication {
         val repo = InMemoryChatRepository().apply {
             seedConversation(conversationId = 101L, memberIds = setOf(42L, 99L))
+            saveMessage(
+                senderId = 99L,
+                payload = MessageSendPayload("msg-monotonic-1", 101L, "TEXT", "Hello"),
+                nowIso = "2026-11-13T11:29:00Z"
+            )
         }
         application { module(testConfig, chatRepositoryOverride = repo) }
         val token42 = issueTestToken(42L)
@@ -360,14 +371,16 @@ class ApplicationTest {
             // Presence ONLINE
             incoming.receive()
 
-            send(Frame.Text("""{"type":"receipt","requestId":"r1","timestamp":"2026-11-13T11:30:00Z","payload":{"conversationId":101,"messageId":55,"status":"READ"}}"""))
+            send(Frame.Text("""{"type":"receipt","requestId":"r1","timestamp":"2026-11-13T11:30:00Z","payload":{"conversationId":101,"messageId":1,"status":"READ"}}"""))
             val first = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
             assertEquals("READ", first["payload"]?.jsonObject?.get("status")?.jsonPrimitive?.content)
+            val firstAt = first["payload"]?.jsonObject?.get("at")?.jsonPrimitive?.content
 
-            // Sending DELIVERED after READ must NOT downgrade READ -> DELIVERED
-            send(Frame.Text("""{"type":"receipt","requestId":"r2","timestamp":"2026-11-13T11:30:01Z","payload":{"conversationId":101,"messageId":55,"status":"DELIVERED"}}"""))
+            // Sending DELIVERED after READ must NOT downgrade READ -> DELIVERED or overwrite readAt
+            send(Frame.Text("""{"type":"receipt","requestId":"r2","timestamp":"2026-11-13T11:30:01Z","payload":{"conversationId":101,"messageId":1,"status":"DELIVERED"}}"""))
             val second = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
             assertEquals("READ", second["payload"]?.jsonObject?.get("status")?.jsonPrimitive?.content)
+            assertEquals(firstAt, second["payload"]?.jsonObject?.get("at")?.jsonPrimitive?.content)
         }
     }
 
@@ -533,6 +546,197 @@ class ApplicationTest {
             assertEquals("call.signal", signalFrame["type"]?.jsonPrimitive?.content)
             assertEquals(42L, signalFrame["payload"]?.jsonObject?.get("fromUserId")?.jsonPrimitive?.long)
             assertEquals("OFFER", signalFrame["payload"]?.jsonObject?.get("signalType")?.jsonPrimitive?.content)
+        }
+    }
+
+    @Test
+    fun directConversationsAndListExposePeerPresenceAndEmitWsPresence() = testApplication {
+        val repo = InMemoryChatRepository()
+        application { module(testConfig, chatRepositoryOverride = repo) }
+
+        val token42 = issueTestToken(42L)
+        val token99 = issueTestToken(99L)
+        val wsClient = createClient { install(ClientWebSockets) }
+
+        wsClient.webSocket("/ws/chat", request = { header(HttpHeaders.Authorization, "Bearer $token42") }) {
+            incoming.receive() // self 42 ONLINE
+
+            wsClient.webSocket("/ws/chat", request = { header(HttpHeaders.Authorization, "Bearer $token99") }) {
+                incoming.receive() // self 99 ONLINE
+
+                // Both users are connected via WS before creating direct conversation -> both receive presence
+                val createResp = client.post("/conversations/direct") {
+                    header(HttpHeaders.Authorization, "Bearer $token42")
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"targetUserId":99}""")
+                }
+                assertEquals(HttpStatusCode.OK, createResp.status)
+                val createdJson = AppJson.parseToJsonElement(createResp.bodyAsText()).jsonObject
+                assertEquals(99L, createdJson["peerUserId"]?.jsonPrimitive?.long)
+                assertEquals(true, createdJson["isOnline"]?.jsonPrimitive?.boolean)
+                assertTrue(createdJson["peerLastSeenAt"]?.jsonPrimitive?.content?.isNotBlank() == true)
+
+                val peer99Frame = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
+                assertEquals("presence", peer99Frame["type"]?.jsonPrimitive?.content)
+                assertEquals(42L, peer99Frame["payload"]?.jsonObject?.get("userId")?.jsonPrimitive?.long)
+                assertEquals("ONLINE", peer99Frame["payload"]?.jsonObject?.get("status")?.jsonPrimitive?.content)
+
+                val listWhileOnline = client.get("/conversations") {
+                    header(HttpHeaders.Authorization, "Bearer $token42")
+                }
+                assertEquals(HttpStatusCode.OK, listWhileOnline.status)
+                val onlineConv = AppJson.parseToJsonElement(listWhileOnline.bodyAsText()).jsonObject["items"]!!.jsonArray[0].jsonObject
+                assertEquals(99L, onlineConv["peerUserId"]?.jsonPrimitive?.long)
+                assertEquals(true, onlineConv["isOnline"]?.jsonPrimitive?.boolean)
+                assertTrue(onlineConv["peerLastSeenAt"]?.jsonPrimitive?.content?.isNotBlank() == true)
+            }
+
+            // Inside 42's WS: receives 99's presence from POST /conversations/direct, then 99's OFFLINE disconnect
+            val frameFor42FromPost = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
+            assertEquals("presence", frameFor42FromPost["type"]?.jsonPrimitive?.content)
+            assertEquals(99L, frameFor42FromPost["payload"]?.jsonObject?.get("userId")?.jsonPrimitive?.long)
+            assertEquals("ONLINE", frameFor42FromPost["payload"]?.jsonObject?.get("status")?.jsonPrimitive?.content)
+
+            val offlineFor42 = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
+            assertEquals("presence", offlineFor42["type"]?.jsonPrimitive?.content)
+            assertEquals(99L, offlineFor42["payload"]?.jsonObject?.get("userId")?.jsonPrimitive?.long)
+            assertEquals("OFFLINE", offlineFor42["payload"]?.jsonObject?.get("status")?.jsonPrimitive?.content)
+
+            // Now 99 is offline -> GET /conversations reflects isOnline = false and peerLastSeenAt
+            val listAfterDisconnect = client.get("/conversations") {
+                header(HttpHeaders.Authorization, "Bearer $token42")
+            }
+            assertEquals(HttpStatusCode.OK, listAfterDisconnect.status)
+            val offlineConv = AppJson.parseToJsonElement(listAfterDisconnect.bodyAsText()).jsonObject["items"]!!.jsonArray[0].jsonObject
+            assertEquals(99L, offlineConv["peerUserId"]?.jsonPrimitive?.long)
+            assertEquals(false, offlineConv["isOnline"]?.jsonPrimitive?.boolean)
+            assertEquals(
+                offlineFor42["payload"]?.jsonObject?.get("lastSeenAt")?.jsonPrimitive?.content,
+                offlineConv["peerLastSeenAt"]?.jsonPrimitive?.content
+            )
+        }
+    }
+
+    @Test
+    fun webSocketConnectPushesInitialOnlineAndOfflinePeerPresenceAndDisconnectUpdatesLastSeen() = testApplication {
+        val repo = InMemoryChatRepository().apply {
+            seedConversation(conversationId = 101L, memberIds = setOf(10L, 20L))
+            seedConversation(conversationId = 102L, memberIds = setOf(10L, 30L))
+        }
+        application { module(testConfig, chatRepositoryOverride = repo) }
+
+        val wsClient = createClient { install(ClientWebSockets) }
+        val token10 = issueTestToken(10L)
+        val token20 = issueTestToken(20L)
+        val token30 = issueTestToken(30L)
+
+        // Peer 20 connects and disconnects so it has a stored lastSeenAt while offline
+        var connected20LastSeen: String? = null
+        wsClient.webSocket("/ws/chat", request = { header(HttpHeaders.Authorization, "Bearer $token20") }) {
+            incoming.receive() // self 20 ONLINE
+            connected20LastSeen = repo.getLastSeenMap(listOf(20L))[20L]
+            kotlinx.coroutines.delay(15)
+        }
+        var stored20LastSeen: String? = null
+        repeat(50) {
+            val current = repo.getLastSeenMap(listOf(20L))[20L]
+            if (current != null && current != connected20LastSeen) {
+                stored20LastSeen = current
+                return@repeat
+            }
+            kotlinx.coroutines.delay(10)
+        }
+        assertTrue(!stored20LastSeen.isNullOrBlank())
+
+        // Peer 30 stays online
+        wsClient.webSocket("/ws/chat", request = { header(HttpHeaders.Authorization, "Bearer $token30") }) {
+            incoming.receive() // self 30 ONLINE
+
+            // User 10 connects -> receives self ONLINE, peer 20 OFFLINE (with stored lastSeenAt), and peer 30 ONLINE
+            wsClient.webSocket("/ws/chat", request = { header(HttpHeaders.Authorization, "Bearer $token10") }) {
+                val received = (1..3).map {
+                    AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
+                }
+                val byUser = received.associateBy { it["payload"]!!.jsonObject["userId"]!!.jsonPrimitive.long }
+                assertEquals("ONLINE", byUser[10L]?.get("payload")?.jsonObject?.get("status")?.jsonPrimitive?.content)
+                assertEquals("OFFLINE", byUser[20L]?.get("payload")?.jsonObject?.get("status")?.jsonPrimitive?.content)
+                assertEquals(stored20LastSeen, byUser[20L]?.get("payload")?.jsonObject?.get("lastSeenAt")?.jsonPrimitive?.content)
+                assertEquals("ONLINE", byUser[30L]?.get("payload")?.jsonObject?.get("status")?.jsonPrimitive?.content)
+            }
+
+            // Peer 30 sees 10 ONLINE then 10 OFFLINE on disconnect, and repo.lastSeenAt for 10 is updated
+            val online10 = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
+            assertEquals("ONLINE", online10["payload"]?.jsonObject?.get("status")?.jsonPrimitive?.content)
+            val offline10 = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
+            assertEquals("OFFLINE", offline10["payload"]?.jsonObject?.get("status")?.jsonPrimitive?.content)
+            assertEquals(
+                offline10["payload"]?.jsonObject?.get("lastSeenAt")?.jsonPrimitive?.content,
+                repo.getLastSeenMap(listOf(10L))[10L]
+            )
+        }
+    }
+
+    @Test
+    fun messagesEndpointAggregatesDeliveryStatusAndHandlesMissingReceiptMessageId() = testApplication {
+        val repo = InMemoryChatRepository().apply {
+            seedConversation(conversationId = 101L, memberIds = setOf(42L, 99L))
+        }
+        application { module(testConfig, chatRepositoryOverride = repo) }
+
+        val token42 = issueTestToken(42L)
+        val token99 = issueTestToken(99L)
+        val wsClient = createClient { install(ClientWebSockets) }
+
+        suspend fun fetchSingleStatus(): String? {
+            val resp = client.get("/conversations/101/messages") {
+                header(HttpHeaders.Authorization, "Bearer $token42")
+            }
+            assertEquals(HttpStatusCode.OK, resp.status)
+            val items = AppJson.parseToJsonElement(resp.bodyAsText()).jsonObject["items"]!!.jsonArray
+            return items.single().jsonObject["deliveryStatus"]?.jsonPrimitive?.content
+        }
+
+        wsClient.webSocket("/ws/chat", request = { header(HttpHeaders.Authorization, "Bearer $token42") }) {
+            incoming.receive() // self 42 ONLINE
+
+            send(
+                Frame.Text(
+                    """{"type":"message.send","requestId":"m1","timestamp":"2026-11-14T10:00:00Z","payload":{"clientMessageId":"uuid-agg-1","conversationId":101,"type":"TEXT","content":"Track receipts"}}"""
+                )
+            )
+            val ack = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
+            val msgId = ack["payload"]!!.jsonObject["messageId"]!!.jsonPrimitive.long
+            val created = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
+            assertEquals("ACCEPTED", created["payload"]?.jsonObject?.get("deliveryStatus")?.jsonPrimitive?.content)
+            assertEquals("ACCEPTED", fetchSingleStatus())
+
+            // Sender's own receipt must not advance recipient deliveryStatus
+            send(Frame.Text("""{"type":"receipt","requestId":"r-self","timestamp":"2026-11-14T10:00:01Z","payload":{"conversationId":101,"messageId":$msgId,"status":"READ"}}"""))
+            incoming.receive() // self receipt echo
+            assertEquals("ACCEPTED", fetchSingleStatus())
+
+            wsClient.webSocket("/ws/chat", request = { header(HttpHeaders.Authorization, "Bearer $token99") }) {
+                incoming.receive() // self 99 ONLINE
+                incoming.receive() // peer 42 ONLINE
+
+                // Missing messageId returns NOT_FOUND error frame cleanly
+                send(Frame.Text("""{"type":"receipt","requestId":"r-missing","timestamp":"2026-11-14T10:00:02Z","payload":{"conversationId":101,"messageId":99999,"status":"DELIVERED"}}"""))
+                val errFrame = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
+                assertEquals("error", errFrame["type"]?.jsonPrimitive?.content)
+                assertEquals("NOT_FOUND", errFrame["payload"]?.jsonObject?.get("code")?.jsonPrimitive?.content)
+
+                // Peer sends DELIVERED -> aggregated deliveryStatus becomes DELIVERED
+                send(Frame.Text("""{"type":"receipt","requestId":"r-deliv","timestamp":"2026-11-14T10:00:03Z","payload":{"conversationId":101,"messageId":$msgId,"status":"DELIVERED"}}"""))
+                val delivFrame = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
+                assertEquals("DELIVERED", delivFrame["payload"]?.jsonObject?.get("status")?.jsonPrimitive?.content)
+                assertEquals("DELIVERED", fetchSingleStatus())
+
+                // Peer sends READ -> aggregated deliveryStatus becomes READ
+                send(Frame.Text("""{"type":"receipt","requestId":"r-read","timestamp":"2026-11-14T10:00:04Z","payload":{"conversationId":101,"messageId":$msgId,"status":"READ"}}"""))
+                val readFrame = AppJson.parseToJsonElement((incoming.receive() as Frame.Text).readText()).jsonObject
+                assertEquals("READ", readFrame["payload"]?.jsonObject?.get("status")?.jsonPrimitive?.content)
+                assertEquals("READ", fetchSingleStatus())
+            }
         }
     }
 }

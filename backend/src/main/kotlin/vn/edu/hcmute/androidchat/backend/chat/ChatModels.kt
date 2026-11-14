@@ -43,7 +43,10 @@ data class ConversationSummaryDto(
     val isPinned: Boolean = false,
     val unreadCount: Int = 0,
     val lastMessage: MessageDto? = null,
-    val updatedAt: String
+    val updatedAt: String,
+    val peerUserId: Long? = null,
+    val isOnline: Boolean = false,
+    val peerLastSeenAt: String? = null
 )
 
 @Serializable
@@ -61,7 +64,8 @@ data class MessageDto(
     val createdAt: String,
     val editedAt: String? = null,
     val deletedAt: String? = null,
-    val reactions: Map<String, List<Long>> = emptyMap()
+    val reactions: Map<String, List<Long>> = emptyMap(),
+    val deliveryStatus: String? = null
 )
 
 @Serializable

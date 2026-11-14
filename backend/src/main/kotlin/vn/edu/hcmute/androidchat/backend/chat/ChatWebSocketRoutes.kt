@@ -47,6 +47,12 @@ class ChatSessionRegistry {
         return false
     }
 
+    fun isUserOnline(userId: Long): Boolean =
+        sessionsByUser[userId]?.isNotEmpty() == true
+
+    fun onlinePeerIds(peerIds: Collection<Long>): Set<Long> =
+        peerIds.filterTo(mutableSetOf()) { isUserOnline(it) }
+
     suspend inline fun <reified T> broadcastToUsers(
         userIds: Set<Long>,
         type: String,
@@ -95,21 +101,47 @@ fun Route.registerChatWebSocketRoutes(
 
             try {
                 val connectedAt = Instant.now().toString()
+                repository.updateLastSeen(userId, connectedAt)
                 val onlinePresence = PresencePayload(
                     userId = userId,
                     status = "ONLINE",
                     lastSeenAt = connectedAt
                 )
                 sendEvent(type = "presence", requestId = null, payload = onlinePresence)
-                if (isFirstSession) {
-                    val peers = repository.peerUserIdsFor(userId)
-                    if (peers.isNotEmpty()) {
-                        sessions.broadcastToUsers(
-                            userIds = peers,
-                            type = "presence",
-                            requestId = null,
-                            payload = onlinePresence
-                        )
+                val peers = repository.peerUserIdsFor(userId)
+                if (isFirstSession && peers.isNotEmpty()) {
+                    sessions.broadcastToUsers(
+                        userIds = peers,
+                        type = "presence",
+                        requestId = null,
+                        payload = onlinePresence
+                    )
+                }
+                if (peers.isNotEmpty()) {
+                    val lastSeenByPeer = repository.getLastSeenMap(peers)
+                    for (peerId in peers) {
+                        val storedLastSeen = lastSeenByPeer[peerId]
+                        if (sessions.isUserOnline(peerId)) {
+                            sendEvent(
+                                type = "presence",
+                                requestId = null,
+                                payload = PresencePayload(
+                                    userId = peerId,
+                                    status = "ONLINE",
+                                    lastSeenAt = storedLastSeen ?: connectedAt
+                                )
+                            )
+                        } else if (storedLastSeen != null) {
+                            sendEvent(
+                                type = "presence",
+                                requestId = null,
+                                payload = PresencePayload(
+                                    userId = peerId,
+                                    status = "OFFLINE",
+                                    lastSeenAt = storedLastSeen
+                                )
+                            )
+                        }
                     }
                 }
 
@@ -125,6 +157,8 @@ fun Route.registerChatWebSocketRoutes(
             } finally {
                 val isLastSession = sessions.unregister(userId, this)
                 if (isLastSession) {
+                    val disconnectedAt = Instant.now().toString()
+                    runCatching { repository.updateLastSeen(userId, disconnectedAt) }
                     val peers = runCatching { repository.peerUserIdsFor(userId) }.getOrDefault(emptySet())
                     if (peers.isNotEmpty()) {
                         sessions.broadcastToUsers(
@@ -134,7 +168,7 @@ fun Route.registerChatWebSocketRoutes(
                             payload = PresencePayload(
                                 userId = userId,
                                 status = "OFFLINE",
-                                lastSeenAt = Instant.now().toString()
+                                lastSeenAt = disconnectedAt
                             )
                         )
                     }
