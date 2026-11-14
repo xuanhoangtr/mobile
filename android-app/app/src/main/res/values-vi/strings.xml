@@ -27,6 +27,8 @@
     <string name="chat_voice_uploading">Đang gửi ghi âm…</string>
     <string name="chat_voice_permission_needed">Cần quyền micro để ghi âm tin nhắn thoại.</string>
     <string name="chat_voice_error">Không thể ghi âm hoặc gửi tin nhắn thoại.</string>
+    <string name="chat_voice_no_audio">Tin nhắn thoại này chưa đính kèm tệp âm thanh.</string>
+    <string name="chat_voice_play_failed">Không thể phát tin nhắn thoại.</string>
     <string name="chat_status_sending">Đang gửi</string>
     <string name="chat_status_accepted">Đã gửi</string>
     <string name="chat_status_delivered">Đã nhận</string>

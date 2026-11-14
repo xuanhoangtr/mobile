@@ -30,11 +30,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import vn.edu.hcmute.androidchat.feature.auth.AuthFeature
@@ -303,12 +306,35 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                             var playingVoiceMessageId by remember { mutableStateOf<String?>(null) }
+                            var playingVoicePositionMs by remember { mutableStateOf(0L) }
+                            var playingVoiceDurationMs by remember { mutableStateOf(0L) }
+                            var voiceStatusMessage by remember { mutableStateOf<String?>(null) }
+                            val noAudioMessage = stringResource(R.string.chat_voice_no_audio)
+                            val playFailedMessage = stringResource(R.string.chat_voice_play_failed)
+                            LaunchedEffect(playingVoiceMessageId) {
+                                if (playingVoiceMessageId == null) {
+                                    playingVoicePositionMs = 0L
+                                    playingVoiceDurationMs = 0L
+                                    return@LaunchedEffect
+                                }
+                                while (isActive && playingVoiceMessageId != null) {
+                                    playingVoicePositionMs = voiceMessagePlayback.currentPositionMs()
+                                    val duration = voiceMessagePlayback.totalDurationMs()
+                                    if (duration > 0L) {
+                                        playingVoiceDurationMs = duration
+                                    }
+                                    delay(150L)
+                                }
+                            }
                             ChatRoomScreen(
                                 uiState = roomState,
                                 onBackClick = {
                                     voiceViewModel.clear()
                                     voiceMessagePlayback.stop()
                                     playingVoiceMessageId = null
+                                    playingVoicePositionMs = 0L
+                                    playingVoiceDurationMs = 0L
+                                    voiceStatusMessage = null
                                     currentRoute = SkeletonRoute.CHAT_LIST
                                 },
                                 onDraftChange = chatRoomViewModel::onDraftChanged,
@@ -326,30 +352,47 @@ class MainActivity : ComponentActivity() {
                                 onRequestMicrophonePermission = {
                                     micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                 },
-                                onStartVoiceRecording = voiceViewModel::startRecording,
+                                onStartVoiceRecording = {
+                                    voiceStatusMessage = null
+                                    voiceMessagePlayback.stop()
+                                    playingVoiceMessageId = null
+                                    voiceViewModel.startRecording()
+                                },
                                 onStopVoiceRecording = voiceViewModel::stopRecording,
                                 onCancelVoiceRecording = voiceViewModel::interrupt,
                                 onToggleVoicePlayback = voiceViewModel::togglePlayback,
                                 onSendVoice = { voiceViewModel.upload(roomState.conversationId) },
                                 onDiscardVoice = voiceViewModel::clear,
                                 playingVoiceMessageId = playingVoiceMessageId,
+                                playingVoicePositionMs = playingVoicePositionMs,
+                                playingVoiceDurationMs = playingVoiceDurationMs,
+                                voiceStatusMessage = voiceStatusMessage,
                                 onPlayVoiceMessage = { message ->
+                                    voiceStatusMessage = null
                                     if (playingVoiceMessageId == message.localId) {
                                         voiceMessagePlayback.stop()
                                         playingVoiceMessageId = null
                                     } else {
                                         val mediaId = extractVoiceMediaId(message.content)
-                                        if (mediaId != null) {
+                                        if (mediaId == null) {
+                                            voiceStatusMessage = noAudioMessage
+                                        } else {
                                             settingsScope.launch {
                                                 val audioFile = downloadVoiceFileIfNeeded(mediaId)
-                                                if (audioFile != null && audioFile.length() > 0L) {
+                                                if (audioFile == null || audioFile.length() <= 0L) {
+                                                    voiceStatusMessage = playFailedMessage
+                                                } else {
                                                     runCatching {
                                                         playingVoiceMessageId = message.localId
+                                                        playingVoicePositionMs = 0L
                                                         voiceMessagePlayback.play(audioFile.absolutePath) {
                                                             playingVoiceMessageId = null
+                                                            playingVoicePositionMs = 0L
+                                                            playingVoiceDurationMs = 0L
                                                         }
                                                     }.onFailure {
                                                         playingVoiceMessageId = null
+                                                        voiceStatusMessage = playFailedMessage
                                                     }
                                                 }
                                             }

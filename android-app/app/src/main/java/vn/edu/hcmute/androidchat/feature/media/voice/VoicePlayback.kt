@@ -11,6 +11,8 @@ interface VoicePlayback {
     fun pause() {}
     fun resume() {}
     fun stop()
+    fun currentPositionMs(): Long = 0L
+    fun totalDurationMs(): Long = 0L
 }
 
 class AndroidVoicePlayback(context: Context) : VoicePlayback {
@@ -85,6 +87,12 @@ class AndroidVoicePlayback(context: Context) : VoicePlayback {
         player = null
         abandonFocus()
     }
+
+    override fun currentPositionMs(): Long =
+        runCatching { player?.currentPosition?.toLong()?.coerceAtLeast(0L) ?: 0L }.getOrDefault(0L)
+
+    override fun totalDurationMs(): Long =
+        runCatching { player?.duration?.toLong()?.coerceAtLeast(0L) ?: 0L }.getOrDefault(0L)
 
     private fun abandonFocus() {
         if (android.os.Build.VERSION.SDK_INT >= 26) {

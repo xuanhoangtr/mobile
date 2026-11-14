@@ -33,6 +33,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -88,6 +89,9 @@ fun ChatRoomScreen(
     onSendVoice: () -> Unit = {},
     onDiscardVoice: () -> Unit = {},
     playingVoiceMessageId: String? = null,
+    playingVoicePositionMs: Long = 0L,
+    playingVoiceDurationMs: Long = 0L,
+    voiceStatusMessage: String? = null,
     onPlayVoiceMessage: ((MessageUiModel) -> Unit)? = null
 ) {
     Scaffold(
@@ -149,66 +153,76 @@ fun ChatRoomScreen(
                 color = ChatStitchTokens.CardWhite,
                 tonalElevation = 2.dp
             ) {
-                if (voiceState != null && voiceState.phase != VoicePhase.IDLE && voiceState.phase != VoicePhase.SENT) {
-                    VoiceComposerBar(
-                        voiceState = voiceState,
-                        onStopRecording = onStopVoiceRecording,
-                        onCancelRecording = onCancelVoiceRecording,
-                        onTogglePlayback = onToggleVoicePlayback,
-                        onSendVoice = onSendVoice,
-                        onDiscardVoice = onDiscardVoice
-                    )
-                } else {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (onAttachMediaClick != null) {
-                            IconButton(onClick = onAttachMediaClick) {
-                                Icon(
-                                    imageVector = Icons.Filled.Add,
-                                    contentDescription = stringResource(R.string.media_foundation_title),
-                                    tint = ChatStitchTokens.BrandBlue
-                                )
-                            }
-                        }
-                        if (voiceState != null) {
-                            IconButton(
-                                onClick = {
-                                    if (hasMicrophonePermission) {
-                                        onStartVoiceRecording()
-                                    } else {
-                                        onRequestMicrophonePermission()
-                                    }
-                                }
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Mic,
-                                    contentDescription = stringResource(R.string.chat_voice_mic),
-                                    tint = ChatStitchTokens.BrandBlue
-                                )
-                            }
-                        }
-                        OutlinedTextField(
-                            value = uiState.draftText,
-                            onValueChange = onDraftChange,
-                            placeholder = { Text(stringResource(R.string.chat_input_hint)) },
-                            shape = RoundedCornerShape(24.dp),
-                            maxLines = 4,
-                            modifier = Modifier.weight(1f)
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    if (!voiceStatusMessage.isNullOrBlank()) {
+                        Text(
+                            text = voiceStatusMessage,
+                            color = Color(0xFFB3261E),
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Button(
-                            onClick = onSendClick,
-                            enabled = uiState.draftText.trim().isNotEmpty(),
-                            shape = RoundedCornerShape(24.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = ChatStitchTokens.BrandBlue
-                            )
+                    }
+                    if (voiceState != null && voiceState.phase != VoicePhase.IDLE && voiceState.phase != VoicePhase.SENT) {
+                        VoiceComposerBar(
+                            voiceState = voiceState,
+                            onStopRecording = onStopVoiceRecording,
+                            onCancelRecording = onCancelVoiceRecording,
+                            onTogglePlayback = onToggleVoicePlayback,
+                            onSendVoice = onSendVoice,
+                            onDiscardVoice = onDiscardVoice
+                        )
+                    } else {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(stringResource(R.string.chat_send))
+                            if (onAttachMediaClick != null) {
+                                IconButton(onClick = onAttachMediaClick) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Add,
+                                        contentDescription = stringResource(R.string.media_foundation_title),
+                                        tint = ChatStitchTokens.BrandBlue
+                                    )
+                                }
+                            }
+                            if (voiceState != null) {
+                                IconButton(
+                                    onClick = {
+                                        if (hasMicrophonePermission) {
+                                            onStartVoiceRecording()
+                                        } else {
+                                            onRequestMicrophonePermission()
+                                        }
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Mic,
+                                        contentDescription = stringResource(R.string.chat_voice_mic),
+                                        tint = ChatStitchTokens.BrandBlue
+                                    )
+                                }
+                            }
+                            OutlinedTextField(
+                                value = uiState.draftText,
+                                onValueChange = onDraftChange,
+                                placeholder = { Text(stringResource(R.string.chat_input_hint)) },
+                                shape = RoundedCornerShape(24.dp),
+                                maxLines = 4,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Button(
+                                onClick = onSendClick,
+                                enabled = uiState.draftText.trim().isNotEmpty(),
+                                shape = RoundedCornerShape(24.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = ChatStitchTokens.BrandBlue
+                                )
+                            ) {
+                                Text(stringResource(R.string.chat_send))
+                            }
                         }
                     }
                 }
@@ -257,6 +271,16 @@ fun ChatRoomScreen(
                     MessageBubble(
                         message = message,
                         isPlayingVoice = playingVoiceMessageId == message.localId,
+                        playingVoicePositionMs = if (playingVoiceMessageId == message.localId) {
+                            playingVoicePositionMs
+                        } else {
+                            0L
+                        },
+                        playingVoiceDurationMs = if (playingVoiceMessageId == message.localId) {
+                            playingVoiceDurationMs
+                        } else {
+                            0L
+                        },
                         onPlayVoiceClick = onPlayVoiceMessage?.let { handler -> { handler(message) } }
                     )
                 }
@@ -292,6 +316,8 @@ private fun DateSeparator(label: String) {
 private fun MessageBubble(
     message: MessageUiModel,
     isPlayingVoice: Boolean = false,
+    playingVoicePositionMs: Long = 0L,
+    playingVoiceDurationMs: Long = 0L,
     onPlayVoiceClick: (() -> Unit)? = null
 ) {
     val isMine = message.isFromCurrentUser
@@ -300,10 +326,25 @@ private fun MessageBubble(
     } else {
         null
     }
+    val parsedDurationMs = if (message.type == MessageType.VOICE) {
+        extractVoiceDurationMs(message.content)
+    } else {
+        0L
+    }
     val displayText = if (message.type == MessageType.VOICE) {
         formatVoiceBubbleText(message.content)
     } else {
         message.content
+    }
+    val totalDurationMs = if (isPlayingVoice && playingVoiceDurationMs > 0L) {
+        playingVoiceDurationMs
+    } else {
+        parsedDurationMs
+    }
+    val playbackProgress = if (isPlayingVoice && totalDurationMs > 0L) {
+        (playingVoicePositionMs.toFloat() / totalDurationMs.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
     }
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -321,18 +362,22 @@ private fun MessageBubble(
             modifier = Modifier.widthIn(max = 280.dp)
         ) {
             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    if (message.type == MessageType.VOICE) {
-                        if (voiceMediaId != null && onPlayVoiceClick != null) {
+                if (message.type == MessageType.VOICE) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (onPlayVoiceClick != null) {
                             IconButton(
                                 onClick = onPlayVoiceClick,
-                                modifier = Modifier.size(32.dp)
+                                modifier = Modifier.size(34.dp)
                             ) {
                                 Icon(
-                                    imageVector = if (isPlayingVoice) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                    imageVector = when {
+                                        voiceMediaId == null -> Icons.Filled.Mic
+                                        isPlayingVoice -> Icons.Filled.Pause
+                                        else -> Icons.Filled.PlayArrow
+                                    },
                                     contentDescription = stringResource(
                                         if (isPlayingVoice) R.string.chat_voice_pause else R.string.chat_voice_play
                                     ),
@@ -347,7 +392,39 @@ private fun MessageBubble(
                                 modifier = Modifier.size(18.dp)
                             )
                         }
+                        Column(modifier = Modifier.weight(1f, fill = false)) {
+                            Text(
+                                text = displayText,
+                                color = if (isMine) Color.White else ChatStitchTokens.TextPrimary,
+                                fontSize = 15.sp
+                            )
+                            if (voiceMediaId != null) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                LinearProgressIndicator(
+                                    progress = { playbackProgress },
+                                    color = if (isMine) Color.White else ChatStitchTokens.BrandBlue,
+                                    trackColor = if (isMine) {
+                                        Color.White.copy(alpha = 0.3f)
+                                    } else {
+                                        ChatStitchTokens.SoftBlueContainer
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(4.dp)
+                                        .clip(RoundedCornerShape(2.dp))
+                                )
+                                if (isPlayingVoice) {
+                                    Spacer(modifier = Modifier.height(3.dp))
+                                    Text(
+                                        text = "${formatVoiceDuration(playingVoicePositionMs)} / ${formatVoiceDuration(totalDurationMs)}",
+                                        color = if (isMine) Color.White.copy(alpha = 0.85f) else ChatStitchTokens.TextSecondary,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
                     }
+                } else {
                     Text(
                         text = displayText,
                         color = if (isMine) Color.White else ChatStitchTokens.TextPrimary,
@@ -445,6 +522,11 @@ private fun VoiceComposerBar(
             VoicePhase.RECORDED,
             VoicePhase.PLAYING,
             VoicePhase.PAUSED -> {
+                val previewProgress = if (voiceState.durationMs > 0L) {
+                    (voiceState.playbackPositionMs.toFloat() / voiceState.durationMs.toFloat()).coerceIn(0f, 1f)
+                } else {
+                    0f
+                }
                 IconButton(onClick = onTogglePlayback) {
                     Icon(
                         imageVector = if (voiceState.phase == VoicePhase.PLAYING) {
@@ -462,12 +544,30 @@ private fun VoiceComposerBar(
                         tint = ChatStitchTokens.BrandBlue
                     )
                 }
-                Text(
-                    text = durationLabel,
-                    color = ChatStitchTokens.TextPrimary,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.weight(1f)
-                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = if (voiceState.phase == VoicePhase.PLAYING || voiceState.playbackPositionMs > 0L) {
+                            "${formatVoiceDuration(voiceState.playbackPositionMs)} / $durationLabel"
+                        } else {
+                            durationLabel
+                        },
+                        color = ChatStitchTokens.TextPrimary,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 13.sp
+                    )
+                    LinearProgressIndicator(
+                        progress = { previewProgress },
+                        color = ChatStitchTokens.BrandBlue,
+                        trackColor = ChatStitchTokens.SoftBlueContainer,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                    )
+                }
                 IconButton(onClick = onDiscardVoice) {
                     Icon(
                         imageVector = Icons.Filled.Delete,
@@ -523,6 +623,13 @@ private fun formatVoiceDuration(durationMs: Long): String {
 internal fun extractVoiceMediaId(content: String): Long? {
     val match = Regex("""(?:\[media:|#)(\d+)\]?""").find(content) ?: return null
     return match.groupValues[1].toLongOrNull()
+}
+
+private fun extractVoiceDurationMs(content: String): Long {
+    val match = Regex("""\((\d+):(\d{2})\)""").find(content) ?: return 0L
+    val minutes = match.groupValues[1].toLongOrNull() ?: return 0L
+    val seconds = match.groupValues[2].toLongOrNull() ?: return 0L
+    return (minutes * 60L + seconds) * 1_000L
 }
 
 private fun formatVoiceBubbleText(content: String): String =

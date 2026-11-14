@@ -27,6 +27,8 @@
     <string name="chat_voice_uploading">Uploading voice…</string>
     <string name="chat_voice_permission_needed">Microphone permission is required to record voice messages.</string>
     <string name="chat_voice_error">Could not record or send voice message.</string>
+    <string name="chat_voice_no_audio">This voice message has no audio file attached.</string>
+    <string name="chat_voice_play_failed">Unable to play voice message.</string>
     <string name="chat_status_sending">Sending</string>
     <string name="chat_status_accepted">Sent</string>
     <string name="chat_status_delivered">Delivered</string>
