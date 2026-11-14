@@ -31,7 +31,9 @@ data class ConversationMemberDto(
     val userId: Long,
     val role: String,
     val status: String,
-    val joinedAt: String
+    val joinedAt: String,
+    val displayName: String? = null,
+    val avatarUrl: String? = null
 )
 
 @Serializable
@@ -169,4 +171,28 @@ data class ReceiptPayload(
     val userId: Long? = null,
     val status: String,
     val at: String? = null
+)
+
+@Serializable
+data class MessageDeletedPayload(
+    val conversationId: Long,
+    val messageId: Long,
+    val userId: Long
+)
+
+@Serializable
+data class MessagePinnedPayload(
+    val conversationId: Long,
+    val messageId: Long,
+    val pinned: Boolean,
+    val userId: Long,
+    val pinnedMessageIds: List<Long>
+)
+
+@Serializable
+data class GroupMembersChangedPayload(
+    val conversationId: Long,
+    val action: String,
+    val actorUserId: Long,
+    val targetUserIds: List<Long>
 )

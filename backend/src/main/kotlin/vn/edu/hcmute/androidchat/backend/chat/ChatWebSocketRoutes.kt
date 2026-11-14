@@ -227,6 +227,10 @@ private suspend fun DefaultWebSocketServerSession.handleMessageSend(
         sendError(envelope.requestId, "FORBIDDEN", "User is not an active member of this conversation")
         return
     }
+    if (result.errorCode != null) {
+        sendError(envelope.requestId, result.errorCode, result.errorMessage ?: "Invalid message payload")
+        return
+    }
 
     sendEvent(type = "message.ack", requestId = envelope.requestId, payload = result.ack)
 

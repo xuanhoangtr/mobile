@@ -120,7 +120,18 @@ fun Route.registerChatRoutes(
                 userIds = body.userIds,
                 nowIso = Instant.now().toString()
             )) {
-                is GroupOpResult.Ok -> call.respond(HttpStatusCode.OK, res.value)
+                is GroupOpResult.Ok -> {
+                    val targetUserIds = body.userIds.filter { it > 0L }.distinct()
+                    broadcastGroupMembersChanged(
+                        repository = repository,
+                        sessions = sessions,
+                        conversationId = conversationId,
+                        action = "ADDED",
+                        actorUserId = userId,
+                        targetUserIds = targetUserIds
+                    )
+                    call.respond(HttpStatusCode.OK, res.value)
+                }
                 is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
             }
         }
@@ -141,7 +152,17 @@ fun Route.registerChatRoutes(
                 targetUserId = targetUserId,
                 newRole = body.role
             )) {
-                is GroupOpResult.Ok -> call.respond(HttpStatusCode.OK, res.value)
+                is GroupOpResult.Ok -> {
+                    broadcastGroupMembersChanged(
+                        repository = repository,
+                        sessions = sessions,
+                        conversationId = conversationId,
+                        action = "ROLE_UPDATED",
+                        actorUserId = userId,
+                        targetUserIds = listOf(targetUserId)
+                    )
+                    call.respond(HttpStatusCode.OK, res.value)
+                }
                 is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
             }
         }
@@ -160,7 +181,17 @@ fun Route.registerChatRoutes(
                 targetUserId = targetUserId,
                 nowIso = Instant.now().toString()
             )) {
-                is GroupOpResult.Ok -> call.respond(HttpStatusCode.NoContent)
+                is GroupOpResult.Ok -> {
+                    broadcastGroupMembersChanged(
+                        repository = repository,
+                        sessions = sessions,
+                        conversationId = conversationId,
+                        action = if (userId == targetUserId) "LEFT" else "REMOVED",
+                        actorUserId = userId,
+                        targetUserIds = listOf(targetUserId)
+                    )
+                    call.respond(HttpStatusCode.NoContent)
+                }
                 is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
             }
         }
@@ -251,6 +282,36 @@ fun Route.registerChatRoutes(
             }
         }
 
+        delete("/messages/{id}") {
+            val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
+                ?: return@delete call.respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", "Invalid authenticated principal")
+            val messageId = call.parameters["id"]?.toLongOrNull()?.takeIf { it > 0L }
+                ?: return@delete call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid message id")
+
+            val res = repository.deleteMessage(userId, messageId)
+            when {
+                res.conversationId == null ->
+                    call.respondError(HttpStatusCode.NotFound, "NOT_FOUND", "Message not found")
+                !res.isMember ->
+                    call.respondError(HttpStatusCode.Forbidden, "FORBIDDEN", "User is not an active member of this conversation")
+                else -> {
+                    if (res.deleted) {
+                        sessions?.broadcastToUsers(
+                            userIds = setOf(userId),
+                            type = "message.deleted",
+                            requestId = null,
+                            payload = MessageDeletedPayload(
+                                conversationId = res.conversationId,
+                                messageId = messageId,
+                                userId = userId
+                            )
+                        )
+                    }
+                    call.respond(HttpStatusCode.NoContent)
+                }
+            }
+        }
+
         post("/messages/{id}/forward") {
             val userId = call.principal<JWTPrincipal>()?.authenticatedUserId()
                 ?: return@post call.respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", "Invalid authenticated principal")
@@ -326,7 +387,10 @@ fun Route.registerChatRoutes(
                 ?: return@patch call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid request body")
 
             when (val res = repository.setConversationPinned(userId, conversationId, body.pinned, Instant.now().toString())) {
-                is GroupOpResult.Ok -> call.respond(HttpStatusCode.OK, res.value)
+                is GroupOpResult.Ok -> call.respond(
+                    HttpStatusCode.OK,
+                    enrichConversationsWithPresence(listOf(res.value), repository, sessions).first()
+                )
                 is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
             }
         }
@@ -352,7 +416,17 @@ fun Route.registerChatRoutes(
                 ?: return@post call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid message id")
 
             when (val res = repository.pinMessage(userId, conversationId, messageId, Instant.now().toString())) {
-                is GroupOpResult.Ok -> call.respond(HttpStatusCode.OK, res.value)
+                is GroupOpResult.Ok -> {
+                    broadcastMessagePinned(
+                        repository = repository,
+                        sessions = sessions,
+                        conversationId = conversationId,
+                        messageId = messageId,
+                        pinned = true,
+                        userId = userId
+                    )
+                    call.respond(HttpStatusCode.OK, res.value)
+                }
                 is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
             }
         }
@@ -366,11 +440,69 @@ fun Route.registerChatRoutes(
                 ?: return@delete call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Invalid message id")
 
             when (val res = repository.unpinMessage(userId, conversationId, messageId)) {
-                is GroupOpResult.Ok -> call.respond(HttpStatusCode.NoContent)
+                is GroupOpResult.Ok -> {
+                    broadcastMessagePinned(
+                        repository = repository,
+                        sessions = sessions,
+                        conversationId = conversationId,
+                        messageId = messageId,
+                        pinned = false,
+                        userId = userId
+                    )
+                    call.respond(HttpStatusCode.NoContent)
+                }
                 is GroupOpResult.Err -> call.respondError(HttpStatusCode.fromValue(res.statusCode), res.code, res.message)
             }
         }
     }
+}
+
+private suspend fun broadcastMessagePinned(
+    repository: ChatRepository,
+    sessions: ChatSessionRegistry?,
+    conversationId: Long,
+    messageId: Long,
+    pinned: Boolean,
+    userId: Long
+) {
+    if (sessions == null) return
+    val pinnedIds = (repository.listPinnedMessages(userId, conversationId) as? GroupOpResult.Ok)
+        ?.value?.map { it.messageId }.orEmpty()
+    sessions.broadcastToUsers(
+        userIds = repository.activeMemberIds(conversationId),
+        type = "message.pinned",
+        requestId = null,
+        payload = MessagePinnedPayload(
+            conversationId = conversationId,
+            messageId = messageId,
+            pinned = pinned,
+            userId = userId,
+            pinnedMessageIds = pinnedIds
+        )
+    )
+}
+
+private suspend fun broadcastGroupMembersChanged(
+    repository: ChatRepository,
+    sessions: ChatSessionRegistry?,
+    conversationId: Long,
+    action: String,
+    actorUserId: Long,
+    targetUserIds: List<Long>
+) {
+    if (sessions == null) return
+    val recipients = repository.activeMemberIds(conversationId) + targetUserIds
+    sessions.broadcastToUsers(
+        userIds = recipients,
+        type = "group.members_changed",
+        requestId = null,
+        payload = GroupMembersChangedPayload(
+            conversationId = conversationId,
+            action = action,
+            actorUserId = actorUserId,
+            targetUserIds = targetUserIds
+        )
+    )
 }
 
 private suspend fun enrichConversationsWithPresence(

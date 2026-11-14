@@ -18,6 +18,14 @@ import javax.sql.DataSource
 data class SaveMessageResult(
     val ack: MessageAckPayload,
     val created: MessageDto?,
+    val isMember: Boolean = true,
+    val errorCode: String? = null,
+    val errorMessage: String? = null
+)
+
+data class DeleteMessageResult(
+    val conversationId: Long?,
+    val deleted: Boolean,
     val isMember: Boolean = true
 )
 
@@ -66,6 +74,7 @@ interface ChatRepository {
     ): GroupOpResult<ReceiptPayload>
     suspend fun editMessage(userId: Long, messageId: Long, newContent: String, nowIso: String): GroupOpResult<MessageDto>
     suspend fun recallMessage(userId: Long, messageId: Long, nowIso: String): GroupOpResult<MessageDto>
+    suspend fun deleteMessage(userId: Long, messageId: Long): DeleteMessageResult
     suspend fun forwardMessage(
         userId: Long,
         sourceMessageId: Long,
@@ -113,55 +122,12 @@ interface ChatRepository {
  */
 class PostgresChatRepository(private val dataSource: DataSource) : ChatRepository {
     @Volatile
-    private var lastSeenSchemaEnsured = false
+    private var schemaEnsured = false
 
     override suspend fun listConversations(userId: Long, limit: Int): List<ConversationSummaryDto> =
         withContext(Dispatchers.IO) {
-            val sql = """
-                SELECT c.id, c.type, c.name, c.avatar_url, cm.is_pinned, c.updated_at,
-                       CASE WHEN c.type = 'DIRECT' THEN (
-                           SELECT cm2.user_id
-                           FROM conversation_members cm2
-                           WHERE cm2.conversation_id = c.id
-                             AND cm2.status = 'ACTIVE'
-                             AND cm2.user_id <> ?
-                           LIMIT 1
-                       ) END AS peer_user_id
-                FROM conversations c
-                JOIN conversation_members cm ON cm.conversation_id = c.id
-                WHERE cm.user_id = ? AND cm.status = 'ACTIVE'
-                ORDER BY cm.is_pinned DESC, c.updated_at DESC
-                LIMIT ?
-            """.trimIndent()
-
             dataSource.connection.use { conn ->
-                val items = conn.prepareStatement(sql).use { stmt ->
-                    stmt.setLong(1, userId)
-                    stmt.setLong(2, userId)
-                    stmt.setInt(3, limit.coerceIn(1, 100))
-                    stmt.executeQuery().use { rs ->
-                        val list = mutableListOf<ConversationSummaryDto>()
-                        while (rs.next()) {
-                            val peerId = rs.getLong("peer_user_id").takeUnless { rs.wasNull() }
-                            list += ConversationSummaryDto(
-                                id = rs.getLong("id"),
-                                type = rs.getString("type"),
-                                name = rs.getString("name"),
-                                avatarUrl = rs.getString("avatar_url"),
-                                isPinned = rs.getBoolean("is_pinned"),
-                                updatedAt = rs.getTimestamp("updated_at").toInstant().toString(),
-                                peerUserId = peerId
-                            )
-                        }
-                        list
-                    }
-                }
-                val peerIds = items.mapNotNull { it.peerUserId }.distinct()
-                val lastSeenMap = if (peerIds.isNotEmpty()) fetchLastSeenMap(conn, peerIds) else emptyMap()
-                items.map { item ->
-                    val peerId = item.peerUserId
-                    if (peerId != null) item.copy(peerLastSeenAt = lastSeenMap[peerId]) else item
-                }
+                fetchConversationSummaries(conn, userId = userId, limit = limit)
             }
         }
 
@@ -173,7 +139,7 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
         val pairKey = "${minOf(userId, targetUserId)}:${maxOf(userId, targetUserId)}"
         val timestamp = Timestamp.from(Instant.parse(nowIso))
         dataSource.connection.use { conn ->
-            ensureLastSeenColumn(conn)
+            ensureSchema(conn)
             val previousAutoCommit = conn.autoCommit
             conn.autoCommit = false
             try {
@@ -222,13 +188,17 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
                 }
 
                 conn.commit()
-                val peerLastSeen = fetchLastSeenMap(conn, listOf(targetUserId))[targetUserId]
-                ConversationSummaryDto(
+                fetchConversationSummaries(
+                    conn = conn,
+                    userId = userId,
+                    limit = 1,
+                    conversationIdFilter = conversationId
+                ).firstOrNull() ?: ConversationSummaryDto(
                     id = conversationId,
                     type = "DIRECT",
                     updatedAt = updatedAt,
                     peerUserId = targetUserId,
-                    peerLastSeenAt = peerLastSeen
+                    peerLastSeenAt = fetchLastSeenMap(conn, listOf(targetUserId))[targetUserId]
                 )
             } catch (ex: Exception) {
                 conn.rollback()
@@ -247,25 +217,33 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
     ): CursorPage<MessageDto>? =
         withContext(Dispatchers.IO) {
             dataSource.connection.use { conn ->
+                ensureSchema(conn)
                 if (!isActiveMember(conn, conversationId, userId)) return@withContext null
 
                 val clampedLimit = limit.coerceIn(1, 100)
                 val sql = if (cursor != null) {
                     """
-                        SELECT id, client_message_id, conversation_id, sender_id, type, content,
-                               media_ref, reply_to_id, metadata::text, created_at, edited_at, deleted_at
-                        FROM messages
-                        WHERE conversation_id = ? AND id < ?
-                        ORDER BY id DESC
+                        SELECT $MESSAGE_SELECT_COLUMNS
+                        FROM messages m
+                        WHERE m.conversation_id = ?
+                          AND m.id < ?
+                          AND NOT EXISTS (
+                              SELECT 1 FROM message_hidden mh
+                              WHERE mh.message_id = m.id AND mh.user_id = ?
+                          )
+                        ORDER BY m.id DESC
                         LIMIT ?
                     """.trimIndent()
                 } else {
                     """
-                        SELECT id, client_message_id, conversation_id, sender_id, type, content,
-                               media_ref, reply_to_id, metadata::text, created_at, edited_at, deleted_at
-                        FROM messages
-                        WHERE conversation_id = ?
-                        ORDER BY id DESC
+                        SELECT $MESSAGE_SELECT_COLUMNS
+                        FROM messages m
+                        WHERE m.conversation_id = ?
+                          AND NOT EXISTS (
+                              SELECT 1 FROM message_hidden mh
+                              WHERE mh.message_id = m.id AND mh.user_id = ?
+                          )
+                        ORDER BY m.id DESC
                         LIMIT ?
                     """.trimIndent()
                 }
@@ -274,9 +252,11 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
                     stmt.setLong(1, conversationId)
                     if (cursor != null) {
                         stmt.setLong(2, cursor)
-                        stmt.setInt(3, clampedLimit + 1)
+                        stmt.setLong(3, userId)
+                        stmt.setInt(4, clampedLimit + 1)
                     } else {
-                        stmt.setInt(2, clampedLimit + 1)
+                        stmt.setLong(2, userId)
+                        stmt.setInt(3, clampedLimit + 1)
                     }
                     stmt.executeQuery().use { rs ->
                         val rows = mutableListOf<MessageDto>()
@@ -289,7 +269,7 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
                     }
                 }
                 val nextCursor = if (hasMore) pageDesc.lastOrNull()?.id?.toString() else null
-                val enrichedAsc = resolveDeliveryStatuses(conn, pageDesc.asReversed())
+                val enrichedAsc = hydrateMessages(conn, pageDesc.asReversed())
                 CursorPage(
                     items = enrichedAsc,
                     nextCursor = nextCursor,
@@ -303,7 +283,14 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
         payload: MessageSendPayload,
         nowIso: String
     ): SaveMessageResult = withContext(Dispatchers.IO) {
-        val clientUuid = UUID.fromString(payload.clientMessageId)
+        val clientUuid = runCatching { UUID.fromString(payload.clientMessageId) }.getOrNull()
+            ?: return@withContext SaveMessageResult(
+                ack = MessageAckPayload(payload.clientMessageId, payload.conversationId, 0L, "VALIDATION_ERROR", nowIso),
+                created = null,
+                isMember = true,
+                errorCode = "VALIDATION_ERROR",
+                errorMessage = "clientMessageId must be a valid UUID"
+            )
         dataSource.connection.use { conn ->
             if (!isActiveMember(conn, payload.conversationId, senderId)) {
                 return@withContext SaveMessageResult(
@@ -312,10 +299,27 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
                     isMember = false
                 )
             }
+            if (payload.replyToId != null) {
+                val replyValidSql = "SELECT 1 FROM messages WHERE id = ? AND conversation_id = ? LIMIT 1"
+                val replyValid = conn.prepareStatement(replyValidSql).use { stmt ->
+                    stmt.setLong(1, payload.replyToId)
+                    stmt.setLong(2, payload.conversationId)
+                    stmt.executeQuery().use { it.next() }
+                }
+                if (!replyValid) {
+                    return@withContext SaveMessageResult(
+                        ack = MessageAckPayload(payload.clientMessageId, payload.conversationId, 0L, "VALIDATION_ERROR", nowIso),
+                        created = null,
+                        isMember = true,
+                        errorCode = "VALIDATION_ERROR",
+                        errorMessage = "replyToId must belong to the same conversation"
+                    )
+                }
+            }
 
             val insertSql = """
-                INSERT INTO messages (client_message_id, conversation_id, sender_id, type, content, media_ref, reply_to_id, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?::jsonb)
+                INSERT INTO messages (client_message_id, conversation_id, sender_id, type, content, media_ref, reply_to_id, forwarded_from_id, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
                 ON CONFLICT (sender_id, client_message_id) DO NOTHING
                 RETURNING id, created_at
             """.trimIndent()
@@ -328,12 +332,15 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
                 stmt.setString(5, payload.content)
                 if (payload.mediaRef != null) stmt.setLong(6, payload.mediaRef) else stmt.setNull(6, java.sql.Types.BIGINT)
                 if (payload.replyToId != null) stmt.setLong(7, payload.replyToId) else stmt.setNull(7, java.sql.Types.BIGINT)
-                stmt.setString(8, AppJson.encodeToString(payload.metadata))
+                if (payload.forwardedFromId != null) stmt.setLong(8, payload.forwardedFromId) else stmt.setNull(8, java.sql.Types.BIGINT)
+                stmt.setString(9, AppJson.encodeToString(payload.metadata))
 
                 stmt.executeQuery().use { rs ->
                     if (rs.next()) {
                         val id = rs.getLong("id")
-                        val createdAt = rs.getTimestamp("created_at").toInstant().toString()
+                        val createdTimestamp = rs.getTimestamp("created_at")
+                        val createdAt = createdTimestamp.toInstant().toString()
+                        touchConversationLastMessage(conn, payload.conversationId, id, createdTimestamp)
                         val dto = MessageDto(
                             id = id,
                             clientMessageId = payload.clientMessageId,
@@ -343,6 +350,7 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
                             content = payload.content,
                             mediaRef = payload.mediaRef,
                             replyToId = payload.replyToId,
+                            forwardedFromId = payload.forwardedFromId,
                             metadata = payload.metadata,
                             createdAt = createdAt,
                             deliveryStatus = "ACCEPTED"
@@ -412,7 +420,7 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
     override suspend fun updateLastSeen(userId: Long, lastSeenAt: String): Unit = withContext(Dispatchers.IO) {
         val timestamp = Timestamp.from(Instant.parse(lastSeenAt))
         dataSource.connection.use { conn ->
-            ensureLastSeenColumn(conn)
+            ensureSchema(conn)
             conn.prepareStatement("UPDATE users SET last_seen_at = ? WHERE id = ?").use { stmt ->
                 stmt.setTimestamp(1, timestamp)
                 stmt.setLong(2, userId)
@@ -502,10 +510,12 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
                 return@withContext GroupOpResult.Err(403, "FORBIDDEN", "User is not an active member of this conversation")
             }
             val sql = """
-                SELECT conversation_id, user_id, role, status, joined_at
-                FROM conversation_members
-                WHERE conversation_id = ? AND status = 'ACTIVE'
-                ORDER BY joined_at ASC
+                SELECT cm.conversation_id, cm.user_id, cm.role, cm.status, cm.joined_at,
+                       u.display_name, u.avatar_url
+                FROM conversation_members cm
+                LEFT JOIN users u ON u.id = cm.user_id
+                WHERE cm.conversation_id = ? AND cm.status = 'ACTIVE'
+                ORDER BY cm.joined_at ASC
             """.trimIndent()
             conn.prepareStatement(sql).use { stmt ->
                 stmt.setLong(1, conversationId)
@@ -517,7 +527,9 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
                             userId = rs.getLong("user_id"),
                             role = rs.getString("role"),
                             status = rs.getString("status"),
-                            joinedAt = rs.getTimestamp("joined_at").toInstant().toString()
+                            joinedAt = rs.getTimestamp("joined_at").toInstant().toString(),
+                            displayName = rs.getString("display_name"),
+                            avatarUrl = rs.getString("avatar_url")
                         )
                     }
                     GroupOpResult.Ok(list)
@@ -538,8 +550,10 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
         }
         val timestamp = Timestamp.from(Instant.parse(nowIso))
         dataSource.connection.use { conn ->
-            val requesterRole = activeMemberRole(conn, conversationId, requesterId)
-                ?: return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+            val requesterRole = when (val ctx = checkGroupConversationAndRole(conn, conversationId, requesterId)) {
+                is GroupOpResult.Ok -> ctx.value
+                is GroupOpResult.Err -> return@withContext ctx
+            }
             if (requesterRole != "OWNER" && requesterRole != "ADMIN") {
                 return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Only OWNER or ADMIN can add members")
             }
@@ -547,7 +561,10 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
                 INSERT INTO conversation_members (conversation_id, user_id, role, status, joined_at, left_at)
                 VALUES (?, ?, 'MEMBER', 'ACTIVE', ?, NULL)
                 ON CONFLICT (conversation_id, user_id) DO UPDATE
-                SET status = 'ACTIVE', left_at = NULL
+                SET role = CASE WHEN conversation_members.status <> 'ACTIVE' THEN 'MEMBER' ELSE conversation_members.role END,
+                    status = 'ACTIVE',
+                    joined_at = CASE WHEN conversation_members.status <> 'ACTIVE' THEN EXCLUDED.joined_at ELSE conversation_members.joined_at END,
+                    left_at = NULL
             """.trimIndent()
             for (targetId in validIds) {
                 conn.prepareStatement(sql).use { stmt ->
@@ -572,8 +589,10 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
             return@withContext GroupOpResult.Err(400, "VALIDATION_ERROR", "Role must be ADMIN or MEMBER")
         }
         dataSource.connection.use { conn ->
-            val requesterRole = activeMemberRole(conn, conversationId, requesterId)
-                ?: return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+            val requesterRole = when (val ctx = checkGroupConversationAndRole(conn, conversationId, requesterId)) {
+                is GroupOpResult.Ok -> ctx.value
+                is GroupOpResult.Err -> return@withContext ctx
+            }
             if (requesterRole != "OWNER") {
                 return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Only OWNER can change member roles")
             }
@@ -581,10 +600,16 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
                 return@withContext GroupOpResult.Err(400, "VALIDATION_ERROR", "OWNER cannot demote self")
             }
             val sql = """
-                UPDATE conversation_members
-                SET role = ?
-                WHERE conversation_id = ? AND user_id = ? AND status = 'ACTIVE'
-                RETURNING conversation_id, user_id, role, status, joined_at
+                WITH updated AS (
+                    UPDATE conversation_members
+                    SET role = ?
+                    WHERE conversation_id = ? AND user_id = ? AND status = 'ACTIVE'
+                    RETURNING conversation_id, user_id, role, status, joined_at
+                )
+                SELECT up.conversation_id, up.user_id, up.role, up.status, up.joined_at,
+                       u.display_name, u.avatar_url
+                FROM updated up
+                LEFT JOIN users u ON u.id = up.user_id
             """.trimIndent()
             conn.prepareStatement(sql).use { stmt ->
                 stmt.setString(1, normalizedRole)
@@ -600,7 +625,9 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
                             userId = rs.getLong("user_id"),
                             role = rs.getString("role"),
                             status = rs.getString("status"),
-                            joinedAt = rs.getTimestamp("joined_at").toInstant().toString()
+                            joinedAt = rs.getTimestamp("joined_at").toInstant().toString(),
+                            displayName = rs.getString("display_name"),
+                            avatarUrl = rs.getString("avatar_url")
                         )
                     )
                 }
@@ -616,8 +643,10 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
     ): GroupOpResult<Unit> = withContext(Dispatchers.IO) {
         val timestamp = Timestamp.from(Instant.parse(nowIso))
         dataSource.connection.use { conn ->
-            val requesterRole = activeMemberRole(conn, conversationId, requesterId)
-                ?: return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+            val requesterRole = when (val ctx = checkGroupConversationAndRole(conn, conversationId, requesterId)) {
+                is GroupOpResult.Ok -> ctx.value
+                is GroupOpResult.Err -> return@withContext ctx
+            }
             val targetRole = activeMemberRole(conn, conversationId, targetUserId)
                 ?: return@withContext GroupOpResult.Err(404, "NOT_FOUND", "Target member not found")
 
@@ -770,8 +799,7 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
             }
             val updateSql = """
                 UPDATE messages SET content = ?, edited_at = ? WHERE id = ?
-                RETURNING id, client_message_id, conversation_id, sender_id, type, content,
-                          media_ref, reply_to_id, metadata::text, created_at, edited_at, deleted_at
+                RETURNING $MESSAGE_RETURNING_COLUMNS
             """.trimIndent()
             val updatedDto = conn.prepareStatement(updateSql).use { stmt ->
                 stmt.setString(1, trimmed)
@@ -782,7 +810,7 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
                     rs.toMessageDto()
                 }
             }
-            GroupOpResult.Ok(resolveDeliveryStatuses(conn, listOf(updatedDto)).first())
+            GroupOpResult.Ok(hydrateMessages(conn, listOf(updatedDto)).first())
         }
     }
 
@@ -811,8 +839,7 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
             }
             val updateSql = """
                 UPDATE messages SET deleted_at = COALESCE(deleted_at, ?), content = '' WHERE id = ?
-                RETURNING id, client_message_id, conversation_id, sender_id, type, content,
-                          media_ref, reply_to_id, metadata::text, created_at, edited_at, deleted_at
+                RETURNING $MESSAGE_RETURNING_COLUMNS
             """.trimIndent()
             val recalledDto = conn.prepareStatement(updateSql).use { stmt ->
                 stmt.setTimestamp(1, timestamp)
@@ -822,9 +849,40 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
                     rs.toMessageDto()
                 }
             }
-            GroupOpResult.Ok(resolveDeliveryStatuses(conn, listOf(recalledDto)).first())
+            GroupOpResult.Ok(hydrateMessages(conn, listOf(recalledDto)).first())
         }
     }
+
+    override suspend fun deleteMessage(userId: Long, messageId: Long): DeleteMessageResult =
+        withContext(Dispatchers.IO) {
+            dataSource.connection.use { conn ->
+                ensureSchema(conn)
+                val selectSql = "SELECT conversation_id FROM messages WHERE id = ? LIMIT 1"
+                val convId = conn.prepareStatement(selectSql).use { stmt ->
+                    stmt.setLong(1, messageId)
+                    stmt.executeQuery().use { rs ->
+                        if (!rs.next()) {
+                            return@withContext DeleteMessageResult(conversationId = null, deleted = false, isMember = false)
+                        }
+                        rs.getLong("conversation_id")
+                    }
+                }
+                if (!isActiveMember(conn, convId, userId)) {
+                    return@withContext DeleteMessageResult(conversationId = convId, deleted = false, isMember = false)
+                }
+                val insertSql = """
+                    INSERT INTO message_hidden (message_id, user_id, hidden_at)
+                    VALUES (?, ?, NOW())
+                    ON CONFLICT (message_id, user_id) DO NOTHING
+                """.trimIndent()
+                val rows = conn.prepareStatement(insertSql).use { stmt ->
+                    stmt.setLong(1, messageId)
+                    stmt.setLong(2, userId)
+                    stmt.executeUpdate()
+                }
+                DeleteMessageResult(conversationId = convId, deleted = rows > 0, isMember = true)
+            }
+        }
 
     override suspend fun forwardMessage(
         userId: Long,
@@ -836,8 +894,9 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
         if (clientMessageId.isBlank() || targetConversationId <= 0L) {
             return@withContext GroupOpResult.Err(400, "VALIDATION_ERROR", "clientMessageId and valid targetConversationId required")
         }
+        val clientUuid = runCatching { UUID.fromString(clientMessageId) }.getOrNull()
+            ?: return@withContext GroupOpResult.Err(400, "VALIDATION_ERROR", "clientMessageId must be a valid UUID")
         val timestamp = Timestamp.from(Instant.parse(nowIso))
-        val clientUuid = UUID.fromString(clientMessageId)
         dataSource.connection.use { conn ->
             if (!isActiveMember(conn, targetConversationId, userId)) {
                 return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not a member of target conversation")
@@ -870,9 +929,10 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
             val insertSql = """
                 INSERT INTO messages (client_message_id, conversation_id, sender_id, type, content, media_ref, forwarded_from_id, metadata, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?)
-                RETURNING id, created_at
+                ON CONFLICT (sender_id, client_message_id) DO NOTHING
+                RETURNING $MESSAGE_RETURNING_COLUMNS
             """.trimIndent()
-            conn.prepareStatement(insertSql).use { stmt ->
+            val insertedDto = conn.prepareStatement(insertSql).use { stmt ->
                 stmt.setObject(1, clientUuid)
                 stmt.setLong(2, targetConversationId)
                 stmt.setLong(3, userId)
@@ -883,24 +943,33 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
                 stmt.setString(8, srcMetadata)
                 stmt.setTimestamp(9, timestamp)
                 stmt.executeQuery().use { rs ->
-                    rs.next()
-                    GroupOpResult.Ok(
-                        MessageDto(
-                            id = rs.getLong("id"),
-                            clientMessageId = clientMessageId,
-                            conversationId = targetConversationId,
-                            senderId = userId,
-                            type = srcType,
-                            content = srcContent,
-                            mediaRef = srcMediaRef,
-                            forwardedFromId = sourceMessageId,
-                            metadata = AppJson.decodeFromString<JsonObject>(srcMetadata),
-                            createdAt = rs.getTimestamp("created_at").toInstant().toString(),
-                            deliveryStatus = "ACCEPTED"
-                        )
-                    )
+                    if (rs.next()) {
+                        val dto = rs.toMessageDto()
+                        touchConversationLastMessage(conn, targetConversationId, dto.id, rs.getTimestamp("created_at"))
+                        dto
+                    } else {
+                        null
+                    }
                 }
             }
+            if (insertedDto != null) {
+                return@withContext GroupOpResult.Ok(hydrateMessages(conn, listOf(insertedDto)).first())
+            }
+            val existingSql = """
+                SELECT $MESSAGE_SELECT_COLUMNS
+                FROM messages m
+                WHERE m.sender_id = ? AND m.client_message_id = ?
+                LIMIT 1
+            """.trimIndent()
+            val existingDto = conn.prepareStatement(existingSql).use { stmt ->
+                stmt.setLong(1, userId)
+                stmt.setObject(2, clientUuid)
+                stmt.executeQuery().use { rs ->
+                    if (!rs.next()) return@withContext GroupOpResult.Err(409, "CONFLICT", "Duplicate clientMessageId")
+                    rs.toMessageDto()
+                }
+            }
+            GroupOpResult.Ok(hydrateMessages(conn, listOf(existingDto)).first())
         }
     }
 
@@ -916,16 +985,22 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
         }
         val timestamp = Timestamp.from(Instant.parse(nowIso))
         dataSource.connection.use { conn ->
-            val convSql = "SELECT conversation_id FROM messages WHERE id = ?"
-            val convId = conn.prepareStatement(convSql).use { stmt ->
+            val convSql = "SELECT conversation_id, deleted_at FROM messages WHERE id = ?"
+            var convId = 0L
+            var deletedAt: Timestamp? = null
+            conn.prepareStatement(convSql).use { stmt ->
                 stmt.setLong(1, messageId)
                 stmt.executeQuery().use { rs ->
                     if (!rs.next()) return@withContext GroupOpResult.Err(404, "NOT_FOUND", "Message not found")
-                    rs.getLong("conversation_id")
+                    convId = rs.getLong("conversation_id")
+                    deletedAt = rs.getTimestamp("deleted_at")
                 }
             }
             if (!isActiveMember(conn, convId, userId)) {
                 return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+            }
+            if (deletedAt != null) {
+                return@withContext GroupOpResult.Err(409, "CONFLICT", "Cannot react to a recalled message")
             }
             val delSql = "DELETE FROM message_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?"
             val deleted = conn.prepareStatement(delSql).use { stmt ->
@@ -981,16 +1056,20 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
         }
         val clampedLimit = limit.coerceIn(1, 100)
         dataSource.connection.use { conn ->
+            ensureSchema(conn)
             if (conversationId != null && !isActiveMember(conn, conversationId, userId)) {
                 return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not an active member of this conversation")
             }
             val sql = """
-                SELECT m.id, m.client_message_id, m.conversation_id, m.sender_id, m.type, m.content,
-                       m.media_ref, m.reply_to_id, m.metadata::text, m.created_at, m.edited_at, m.deleted_at
+                SELECT $MESSAGE_SELECT_COLUMNS
                 FROM messages m
                 JOIN conversation_members cm ON cm.conversation_id = m.conversation_id
                 WHERE cm.user_id = ? AND cm.status = 'ACTIVE'
                   AND m.deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM message_hidden mh
+                      WHERE mh.message_id = m.id AND mh.user_id = ?
+                  )
                   AND (? IS NULL OR m.conversation_id = ?)
                   AND (? IS NULL OR m.id < ?)
                   AND m.content ILIKE ?
@@ -999,22 +1078,23 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
             """.trimIndent()
             val (page, hasMore) = conn.prepareStatement(sql).use { stmt ->
                 stmt.setLong(1, userId)
+                stmt.setLong(2, userId)
                 if (conversationId != null) {
-                    stmt.setLong(2, conversationId)
                     stmt.setLong(3, conversationId)
+                    stmt.setLong(4, conversationId)
                 } else {
-                    stmt.setNull(2, java.sql.Types.BIGINT)
                     stmt.setNull(3, java.sql.Types.BIGINT)
+                    stmt.setNull(4, java.sql.Types.BIGINT)
                 }
                 if (cursor != null) {
-                    stmt.setLong(4, cursor)
                     stmt.setLong(5, cursor)
+                    stmt.setLong(6, cursor)
                 } else {
-                    stmt.setNull(4, java.sql.Types.BIGINT)
                     stmt.setNull(5, java.sql.Types.BIGINT)
+                    stmt.setNull(6, java.sql.Types.BIGINT)
                 }
-                stmt.setString(6, "%$trimmed%")
-                stmt.setInt(7, clampedLimit + 1)
+                stmt.setString(7, "%$trimmed%")
+                stmt.setInt(8, clampedLimit + 1)
                 stmt.executeQuery().use { rs ->
                     val rows = mutableListOf<MessageDto>()
                     while (rs.next()) {
@@ -1026,7 +1106,7 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
                 }
             }
             val nextCursor = if (hasMore) page.lastOrNull()?.id?.toString() else null
-            val enrichedPage = resolveDeliveryStatuses(conn, page)
+            val enrichedPage = hydrateMessages(conn, page)
             GroupOpResult.Ok(CursorPage(items = enrichedPage, nextCursor = nextCursor, hasMore = hasMore))
         }
     }
@@ -1054,23 +1134,13 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
                 stmt.setLong(4, userId)
                 stmt.executeUpdate()
             }
-            val selSql = "SELECT id, type, name, avatar_url, updated_at FROM conversations WHERE id = ?"
-            conn.prepareStatement(selSql).use { stmt ->
-                stmt.setLong(1, conversationId)
-                stmt.executeQuery().use { rs ->
-                    if (!rs.next()) return@withContext GroupOpResult.Err(404, "NOT_FOUND", "Conversation not found")
-                    GroupOpResult.Ok(
-                        ConversationSummaryDto(
-                            id = rs.getLong("id"),
-                            type = rs.getString("type"),
-                            name = rs.getString("name"),
-                            avatarUrl = rs.getString("avatar_url"),
-                            isPinned = pinned,
-                            updatedAt = rs.getTimestamp("updated_at").toInstant().toString()
-                        )
-                    )
-                }
-            }
+            val summary = fetchConversationSummaries(
+                conn = conn,
+                userId = userId,
+                limit = 1,
+                conversationIdFilter = conversationId
+            ).firstOrNull() ?: return@withContext GroupOpResult.Err(404, "NOT_FOUND", "Conversation not found")
+            GroupOpResult.Ok(summary)
         }
     }
 
@@ -1117,6 +1187,26 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
             if (!isActiveMember(conn, conversationId, userId)) {
                 return@withContext GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
             }
+            val msgSql = "SELECT deleted_at FROM messages WHERE id = ? AND conversation_id = ? LIMIT 1"
+            var deletedAt: Timestamp? = null
+            val exists = conn.prepareStatement(msgSql).use { stmt ->
+                stmt.setLong(1, messageId)
+                stmt.setLong(2, conversationId)
+                stmt.executeQuery().use { rs ->
+                    if (!rs.next()) {
+                        false
+                    } else {
+                        deletedAt = rs.getTimestamp("deleted_at")
+                        true
+                    }
+                }
+            }
+            if (!exists) {
+                return@withContext GroupOpResult.Err(404, "NOT_FOUND", "Message not found in this conversation")
+            }
+            if (deletedAt != null) {
+                return@withContext GroupOpResult.Err(409, "CONFLICT", "Cannot pin a recalled message")
+            }
             val sql = """
                 INSERT INTO pinned_messages (conversation_id, message_id, pinned_by, pinned_at)
                 VALUES (?, ?, ?, ?)
@@ -1152,6 +1242,155 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
         }
     }
 
+    private fun fetchConversationSummaries(
+        conn: java.sql.Connection,
+        userId: Long,
+        limit: Int,
+        conversationIdFilter: Long? = null
+    ): List<ConversationSummaryDto> {
+        ensureSchema(conn)
+        val sql = """
+            SELECT c.id, c.type, c.name, c.avatar_url, cm.is_pinned, c.updated_at,
+                   CASE WHEN c.type = 'DIRECT' THEN (
+                       SELECT cm2.user_id
+                       FROM conversation_members cm2
+                       WHERE cm2.conversation_id = c.id
+                         AND cm2.status = 'ACTIVE'
+                         AND cm2.user_id <> ?
+                       LIMIT 1
+                   ) END AS peer_user_id,
+                   (
+                       SELECT COUNT(*)::int
+                       FROM messages m
+                       WHERE m.conversation_id = c.id
+                         AND m.id > COALESCE(cm.last_read_message_id, 0)
+                         AND m.sender_id <> ?
+                         AND m.deleted_at IS NULL
+                         AND NOT EXISTS (
+                             SELECT 1 FROM message_hidden mh
+                             WHERE mh.message_id = m.id AND mh.user_id = ?
+                         )
+                   ) AS unread_count
+            FROM conversations c
+            JOIN conversation_members cm ON cm.conversation_id = c.id
+            WHERE cm.user_id = ? AND cm.status = 'ACTIVE'
+              AND (? IS NULL OR c.id = ?)
+            ORDER BY cm.is_pinned DESC, c.updated_at DESC
+            LIMIT ?
+        """.trimIndent()
+
+        val items = conn.prepareStatement(sql).use { stmt ->
+            stmt.setLong(1, userId)
+            stmt.setLong(2, userId)
+            stmt.setLong(3, userId)
+            stmt.setLong(4, userId)
+            if (conversationIdFilter != null) {
+                stmt.setLong(5, conversationIdFilter)
+                stmt.setLong(6, conversationIdFilter)
+            } else {
+                stmt.setNull(5, java.sql.Types.BIGINT)
+                stmt.setNull(6, java.sql.Types.BIGINT)
+            }
+            stmt.setInt(7, limit.coerceIn(1, 100))
+            stmt.executeQuery().use { rs ->
+                val list = mutableListOf<ConversationSummaryDto>()
+                while (rs.next()) {
+                    val peerId = rs.getLong("peer_user_id").takeUnless { rs.wasNull() }
+                    list += ConversationSummaryDto(
+                        id = rs.getLong("id"),
+                        type = rs.getString("type"),
+                        name = rs.getString("name"),
+                        avatarUrl = rs.getString("avatar_url"),
+                        isPinned = rs.getBoolean("is_pinned"),
+                        unreadCount = rs.getInt("unread_count"),
+                        updatedAt = rs.getTimestamp("updated_at").toInstant().toString(),
+                        peerUserId = peerId
+                    )
+                }
+                list
+            }
+        }
+        if (items.isEmpty()) return items
+
+        val lastMessagesByConvId = fetchLastMessagesByConversation(conn, userId, items.map { it.id }.distinct())
+        val peerIds = items.mapNotNull { it.peerUserId }.distinct()
+        val lastSeenMap = if (peerIds.isNotEmpty()) fetchLastSeenMap(conn, peerIds) else emptyMap()
+        return items.map { item ->
+            item.copy(
+                lastMessage = lastMessagesByConvId[item.id],
+                peerLastSeenAt = item.peerUserId?.let { lastSeenMap[it] }
+            )
+        }
+    }
+
+    private fun fetchLastMessagesByConversation(
+        conn: java.sql.Connection,
+        userId: Long,
+        conversationIds: List<Long>
+    ): Map<Long, MessageDto> {
+        if (conversationIds.isEmpty()) return emptyMap()
+        val placeholders = conversationIds.joinToString(",") { "?" }
+        val sql = """
+            SELECT DISTINCT ON (m.conversation_id)
+                   $MESSAGE_SELECT_COLUMNS
+            FROM messages m
+            WHERE m.conversation_id IN ($placeholders)
+              AND NOT EXISTS (
+                  SELECT 1 FROM message_hidden mh
+                  WHERE mh.message_id = m.id AND mh.user_id = ?
+              )
+            ORDER BY m.conversation_id, m.id DESC
+        """.trimIndent()
+        val rawMessages = conn.prepareStatement(sql).use { stmt ->
+            conversationIds.forEachIndexed { index, cid -> stmt.setLong(index + 1, cid) }
+            stmt.setLong(conversationIds.size + 1, userId)
+            stmt.executeQuery().use { rs ->
+                val list = mutableListOf<MessageDto>()
+                while (rs.next()) list += rs.toMessageDto()
+                list
+            }
+        }
+        return hydrateMessages(conn, rawMessages).associateBy { it.conversationId }
+    }
+
+    private fun touchConversationLastMessage(
+        conn: java.sql.Connection,
+        conversationId: Long,
+        messageId: Long,
+        updatedAt: Timestamp
+    ) {
+        val sql = "UPDATE conversations SET last_message_id = ?, updated_at = ? WHERE id = ?"
+        conn.prepareStatement(sql).use { stmt ->
+            stmt.setLong(1, messageId)
+            stmt.setTimestamp(2, updatedAt)
+            stmt.setLong(3, conversationId)
+            stmt.executeUpdate()
+        }
+    }
+
+    private fun conversationType(conn: java.sql.Connection, conversationId: Long): String? {
+        val sql = "SELECT type FROM conversations WHERE id = ? LIMIT 1"
+        conn.prepareStatement(sql).use { stmt ->
+            stmt.setLong(1, conversationId)
+            stmt.executeQuery().use { return if (it.next()) it.getString("type") else null }
+        }
+    }
+
+    private fun checkGroupConversationAndRole(
+        conn: java.sql.Connection,
+        conversationId: Long,
+        requesterId: Long
+    ): GroupOpResult<String> {
+        val convType = conversationType(conn, conversationId)
+            ?: return GroupOpResult.Err(404, "NOT_FOUND", "Conversation not found")
+        val role = activeMemberRole(conn, conversationId, requesterId)
+            ?: return GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+        if (convType != "GROUP") {
+            return GroupOpResult.Err(400, "VALIDATION_ERROR", "Member management is only supported for GROUP conversations")
+        }
+        return GroupOpResult.Ok(role)
+    }
+
     private fun activeMemberRole(conn: java.sql.Connection, conversationId: Long, userId: Long): String? {
         val sql = """
             SELECT role FROM conversation_members
@@ -1178,22 +1417,35 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
         }
     }
 
-    private fun ensureLastSeenColumn(conn: java.sql.Connection) {
-        if (lastSeenSchemaEnsured) return
-        try {
-            conn.createStatement().use { stmt ->
-                stmt.execute("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ")
+    private fun ensureSchema(conn: java.sql.Connection) {
+        if (schemaEnsured) return
+        synchronized(this) {
+            if (schemaEnsured) return
+            try {
+                conn.createStatement().use { stmt ->
+                    stmt.execute("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ")
+                    stmt.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS message_hidden (
+                            message_id BIGINT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                            user_id BIGINT NOT NULL,
+                            hidden_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                            PRIMARY KEY (message_id, user_id)
+                        )
+                        """.trimIndent()
+                    )
+                }
+                schemaEnsured = true
+            } catch (_: Exception) {
+                // Safe fallback if DDL is restricted; migrations are expected to provide schema.
             }
-            lastSeenSchemaEnsured = true
-        } catch (_: Exception) {
-            // Safe fallback if DDL is restricted; migrations are expected to provide the column.
         }
     }
 
     private fun fetchLastSeenMap(conn: java.sql.Connection, userIds: Collection<Long>): Map<Long, String> {
         val distinctIds = userIds.filter { it > 0L }.distinct()
         if (distinctIds.isEmpty()) return emptyMap()
-        ensureLastSeenColumn(conn)
+        ensureSchema(conn)
         val placeholders = distinctIds.joinToString(",") { "?" }
         val sql = "SELECT id, last_seen_at FROM users WHERE id IN ($placeholders) AND last_seen_at IS NOT NULL"
         return conn.prepareStatement(sql).use { stmt ->
@@ -1221,11 +1473,51 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
             content = getString("content"),
             mediaRef = getLong("media_ref").takeUnless { wasNull() },
             replyToId = getLong("reply_to_id").takeUnless { wasNull() },
+            forwardedFromId = getLong("forwarded_from_id").takeUnless { wasNull() },
             metadata = AppJson.decodeFromString<JsonObject>(metadataText),
             createdAt = getTimestamp("created_at").toInstant().toString(),
             editedAt = getTimestamp("edited_at")?.toInstant()?.toString(),
             deletedAt = getTimestamp("deleted_at")?.toInstant()?.toString()
         )
+    }
+
+    private fun hydrateMessages(conn: java.sql.Connection, messages: List<MessageDto>): List<MessageDto> {
+        if (messages.isEmpty()) return messages
+        val withStatus = resolveDeliveryStatuses(conn, messages)
+        val reactionsByMessageId = fetchReactionsMap(conn, withStatus.map { it.id }.distinct())
+        return withStatus.map { msg ->
+            msg.copy(reactions = reactionsByMessageId[msg.id].orEmpty())
+        }
+    }
+
+    private fun fetchReactionsMap(
+        conn: java.sql.Connection,
+        messageIds: List<Long>
+    ): Map<Long, Map<String, List<Long>>> {
+        if (messageIds.isEmpty()) return emptyMap()
+        val placeholders = messageIds.joinToString(",") { "?" }
+        val sql = """
+            SELECT message_id, emoji, user_id
+            FROM message_reactions
+            WHERE message_id IN ($placeholders)
+            ORDER BY created_at ASC, user_id ASC
+        """.trimIndent()
+        val result = mutableMapOf<Long, MutableMap<String, MutableList<Long>>>()
+        conn.prepareStatement(sql).use { stmt ->
+            messageIds.forEachIndexed { index, id -> stmt.setLong(index + 1, id) }
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    val msgId = rs.getLong("message_id")
+                    val emoji = rs.getString("emoji")
+                    val uid = rs.getLong("user_id")
+                    result
+                        .getOrPut(msgId) { linkedMapOf() }
+                        .getOrPut(emoji) { mutableListOf() }
+                        .add(uid)
+                }
+            }
+        }
+        return result
     }
 
     private fun resolveDeliveryStatuses(conn: java.sql.Connection, messages: List<MessageDto>): List<MessageDto> {
@@ -1260,6 +1552,16 @@ class PostgresChatRepository(private val dataSource: DataSource) : ChatRepositor
         }
         return messages.map { it.copy(deliveryStatus = statusByMessageId[it.id] ?: "ACCEPTED") }
     }
+
+    private companion object {
+        const val MESSAGE_SELECT_COLUMNS =
+            "m.id, m.client_message_id, m.conversation_id, m.sender_id, m.type, m.content, " +
+                "m.media_ref, m.reply_to_id, m.forwarded_from_id, m.metadata::text, m.created_at, m.edited_at, m.deleted_at"
+
+        const val MESSAGE_RETURNING_COLUMNS =
+            "id, client_message_id, conversation_id, sender_id, type, content, " +
+                "media_ref, reply_to_id, forwarded_from_id, metadata::text, created_at, edited_at, deleted_at"
+    }
 }
 
 /**
@@ -1278,7 +1580,9 @@ class InMemoryChatRepository : ChatRepository {
     private val receiptsByMessage = ConcurrentHashMap<Long, ConcurrentHashMap<Long, InMemoryReceipt>>()
     private val lastReadMessageIdByConvUser = ConcurrentHashMap<String, Long>()
     private val lastSeenByUser = ConcurrentHashMap<Long, String>()
+    private val userProfiles = ConcurrentHashMap<Long, Pair<String, String?>>()
     private val reactionsByMessage = ConcurrentHashMap<Long, ConcurrentHashMap<String, MutableSet<Long>>>()
+    private val hiddenMessageIdsByUser = ConcurrentHashMap<Long, MutableSet<Long>>()
     private val pinnedConversationsByUser = ConcurrentHashMap<Long, MutableSet<Long>>()
     private val pinnedMessagesByConversation = ConcurrentHashMap<Long, ConcurrentHashMap<Long, PinnedMessageDto>>()
     private val messagesByConversation = ConcurrentHashMap<Long, CopyOnWriteArrayList<MessageDto>>()
@@ -1286,38 +1590,53 @@ class InMemoryChatRepository : ChatRepository {
     private val nextConversationId = AtomicLong(1000L)
     private val nextMessageId = AtomicLong(1L)
 
-    fun seedConversation(conversationId: Long, memberIds: Set<Long>, title: String = "Conversation $conversationId") {
+    fun seedUserProfile(userId: Long, displayName: String, avatarUrl: String? = null) {
+        userProfiles[userId] = displayName to avatarUrl
+    }
+
+    fun seedConversation(
+        conversationId: Long,
+        memberIds: Set<Long>,
+        title: String = "Conversation $conversationId",
+        ownerId: Long? = memberIds.firstOrNull(),
+        rolesByUserId: Map<Long, String> = emptyMap()
+    ) {
+        val nowIso = Instant.now().toString()
+        val type = if (memberIds.size > 2) "GROUP" else "DIRECT"
         conversations[conversationId] = ConversationSummaryDto(
             id = conversationId,
-            type = if (memberIds.size > 2) "GROUP" else "DIRECT",
+            type = type,
             name = title,
-            updatedAt = Instant.now().toString()
+            updatedAt = nowIso
         )
         membersByConversation[conversationId] = ConcurrentHashMap.newKeySet<Long>().apply { addAll(memberIds) }
+        val roles = ConcurrentHashMap<Long, ConversationMemberDto>()
+        for (memberId in memberIds) {
+            val explicitRole = rolesByUserId[memberId]?.uppercase()?.takeIf { it in setOf("OWNER", "ADMIN", "MEMBER") }
+            val resolvedRole = explicitRole ?: if (type == "GROUP" && memberId == ownerId) "OWNER" else "MEMBER"
+            roles[memberId] = ConversationMemberDto(
+                conversationId = conversationId,
+                userId = memberId,
+                role = resolvedRole,
+                status = "ACTIVE",
+                joinedAt = nowIso
+            )
+        }
+        memberRolesByConversation[conversationId] = roles
         if (memberIds.size == 2) {
             val sorted = memberIds.sorted()
             directPairIndex["${sorted[0]}:${sorted[1]}"] = conversationId
         }
     }
 
-    override suspend fun listConversations(userId: Long, limit: Int): List<ConversationSummaryDto> =
-        conversations.values
+    override suspend fun listConversations(userId: Long, limit: Int): List<ConversationSummaryDto> {
+        val pinnedIds = pinnedConversationsByUser[userId].orEmpty()
+        return conversations.values
             .filter { conv -> membersByConversation[conv.id]?.contains(userId) == true }
-            .sortedByDescending { it.updatedAt }
+            .map { conv -> buildConversationSummary(conv, userId, isPinned = conv.id in pinnedIds) }
+            .sortedWith(compareByDescending<ConversationSummaryDto> { it.isPinned }.thenByDescending { it.updatedAt })
             .take(limit.coerceIn(1, 100))
-            .map { conv ->
-                val enrichedLastMsg = conv.lastMessage?.let { withDeliveryStatus(it) }
-                if (conv.type == "DIRECT") {
-                    val peerId = membersByConversation[conv.id]?.firstOrNull { it != userId }
-                    conv.copy(
-                        lastMessage = enrichedLastMsg,
-                        peerUserId = peerId,
-                        peerLastSeenAt = peerId?.let { lastSeenByUser[it] }
-                    )
-                } else {
-                    conv.copy(lastMessage = enrichedLastMsg)
-                }
-            }
+    }
 
     override suspend fun getOrCreateDirectConversation(
         userId: Long,
@@ -1328,8 +1647,8 @@ class InMemoryChatRepository : ChatRepository {
         val existingId = directPairIndex[pairKey]
         if (existingId != null) {
             conversations[existingId]?.let { existing ->
-                return existing.copy(
-                    lastMessage = existing.lastMessage?.let { withDeliveryStatus(it) },
+                val isPinned = pinnedConversationsByUser[userId]?.contains(existing.id) == true
+                return buildConversationSummary(existing, userId, isPinned).copy(
                     peerUserId = targetUserId,
                     peerLastSeenAt = lastSeenByUser[targetUserId]
                 )
@@ -1347,8 +1666,8 @@ class InMemoryChatRepository : ChatRepository {
         val racedId = directPairIndex.putIfAbsent(pairKey, newId)
         if (racedId != null) {
             val existing = conversations[racedId] ?: created
-            return existing.copy(
-                lastMessage = existing.lastMessage?.let { withDeliveryStatus(it) },
+            val isPinned = pinnedConversationsByUser[userId]?.contains(existing.id) == true
+            return buildConversationSummary(existing, userId, isPinned).copy(
                 peerUserId = targetUserId,
                 peerLastSeenAt = lastSeenByUser[targetUserId]
             )
@@ -1357,6 +1676,20 @@ class InMemoryChatRepository : ChatRepository {
         membersByConversation[newId] = ConcurrentHashMap.newKeySet<Long>().apply {
             add(userId)
             add(targetUserId)
+        }
+        memberRolesByConversation[newId] = ConcurrentHashMap<Long, ConversationMemberDto>().apply {
+            for (memberId in setOf(userId, targetUserId)) {
+                put(
+                    memberId,
+                    ConversationMemberDto(
+                        conversationId = newId,
+                        userId = memberId,
+                        role = "MEMBER",
+                        status = "ACTIVE",
+                        joinedAt = nowIso
+                    )
+                )
+            }
         }
         return created
     }
@@ -1371,16 +1704,17 @@ class InMemoryChatRepository : ChatRepository {
         if (members != null && userId !in members) return null
         if (members == null) return CursorPage(items = emptyList(), nextCursor = null, hasMore = false)
 
+        val hidden = hiddenMessageIdsByUser[userId].orEmpty()
         val clampedLimit = limit.coerceIn(1, 100)
         val allDesc = messagesByConversation[conversationId]
             .orEmpty()
             .asReversed()
-            .filter { msg -> cursor == null || msg.id < cursor }
+            .filter { msg -> msg.id !in hidden && (cursor == null || msg.id < cursor) }
         val hasMore = allDesc.size > clampedLimit
         val pageDesc = if (hasMore) allDesc.take(clampedLimit) else allDesc
         val nextCursor = if (hasMore) pageDesc.lastOrNull()?.id?.toString() else null
         return CursorPage(
-            items = pageDesc.asReversed().map { withDeliveryStatus(it) },
+            items = pageDesc.asReversed().map { enrichMessage(it) },
             nextCursor = nextCursor,
             hasMore = hasMore
         )
@@ -1399,6 +1733,18 @@ class InMemoryChatRepository : ChatRepository {
                 isMember = false
             )
         }
+        if (payload.replyToId != null) {
+            val replyExists = messagesByConversation[payload.conversationId]?.any { it.id == payload.replyToId } == true
+            if (!replyExists) {
+                return SaveMessageResult(
+                    ack = MessageAckPayload(payload.clientMessageId, payload.conversationId, 0L, "VALIDATION_ERROR", nowIso),
+                    created = null,
+                    isMember = true,
+                    errorCode = "VALIDATION_ERROR",
+                    errorMessage = "replyToId must belong to the same conversation"
+                )
+            }
+        }
 
         val dedupKey = "$senderId:${payload.clientMessageId}"
         val existing = dedupIndex[dedupKey]
@@ -1416,7 +1762,7 @@ class InMemoryChatRepository : ChatRepository {
         }
 
         val assignedId = nextMessageId.getAndIncrement()
-        val created = withDeliveryStatus(
+        val created = enrichMessage(
             MessageDto(
                 id = assignedId,
                 clientMessageId = payload.clientMessageId,
@@ -1426,6 +1772,7 @@ class InMemoryChatRepository : ChatRepository {
                 content = payload.content,
                 mediaRef = payload.mediaRef,
                 replyToId = payload.replyToId,
+                forwardedFromId = payload.forwardedFromId,
                 metadata = payload.metadata,
                 createdAt = nowIso
             )
@@ -1538,15 +1885,18 @@ class InMemoryChatRepository : ChatRepository {
             return GroupOpResult.Err(403, "FORBIDDEN", "User is not an active member of this conversation")
         }
         val roleMap = memberRolesByConversation[conversationId]
-        val items = members.map { uid ->
-            roleMap?.get(uid) ?: ConversationMemberDto(
-                conversationId = conversationId,
-                userId = uid,
-                role = "MEMBER",
-                status = "ACTIVE",
-                joinedAt = conversations[conversationId]?.updatedAt ?: ""
-            )
-        }
+        val items = members
+            .map { uid ->
+                val base = roleMap?.get(uid) ?: ConversationMemberDto(
+                    conversationId = conversationId,
+                    userId = uid,
+                    role = "MEMBER",
+                    status = "ACTIVE",
+                    joinedAt = conversations[conversationId]?.updatedAt ?: ""
+                )
+                withUserProfile(base)
+            }
+            .sortedBy { it.joinedAt }
         return GroupOpResult.Ok(items)
     }
 
@@ -1560,11 +1910,14 @@ class InMemoryChatRepository : ChatRepository {
         if (validIds.isEmpty()) {
             return GroupOpResult.Err(400, "VALIDATION_ERROR", "At least one valid userId is required")
         }
-        val roles = memberRolesByConversation[conversationId]
-        val requesterRole = roles?.get(requesterId)?.role
+        val requesterRole = when (val ctx = checkGroupConversationAndRole(conversationId, requesterId)) {
+            is GroupOpResult.Ok -> ctx.value
+            is GroupOpResult.Err -> return ctx
+        }
         if (requesterRole != "OWNER" && requesterRole != "ADMIN") {
             return GroupOpResult.Err(403, "FORBIDDEN", "Only OWNER or ADMIN can add members")
         }
+        val roles = memberRolesByConversation.computeIfAbsent(conversationId) { ConcurrentHashMap() }
         val members = membersByConversation.computeIfAbsent(conversationId) { ConcurrentHashMap.newKeySet() }
         for (uid in validIds) {
             if (members.add(uid)) {
@@ -1590,19 +1943,23 @@ class InMemoryChatRepository : ChatRepository {
         if (normalizedRole != "ADMIN" && normalizedRole != "MEMBER") {
             return GroupOpResult.Err(400, "VALIDATION_ERROR", "Role must be ADMIN or MEMBER")
         }
-        val roles = memberRolesByConversation[conversationId]
-            ?: return GroupOpResult.Err(404, "NOT_FOUND", "Conversation not found")
-        if (roles[requesterId]?.role != "OWNER") {
+        val requesterRole = when (val ctx = checkGroupConversationAndRole(conversationId, requesterId)) {
+            is GroupOpResult.Ok -> ctx.value
+            is GroupOpResult.Err -> return ctx
+        }
+        if (requesterRole != "OWNER") {
             return GroupOpResult.Err(403, "FORBIDDEN", "Only OWNER can change member roles")
         }
         if (targetUserId == requesterId) {
             return GroupOpResult.Err(400, "VALIDATION_ERROR", "OWNER cannot demote self")
         }
+        val roles = memberRolesByConversation[conversationId]
+            ?: return GroupOpResult.Err(404, "NOT_FOUND", "Target member not found")
         val existing = roles[targetUserId]
             ?: return GroupOpResult.Err(404, "NOT_FOUND", "Target member not found")
         val updated = existing.copy(role = normalizedRole)
         roles[targetUserId] = updated
-        return GroupOpResult.Ok(updated)
+        return GroupOpResult.Ok(withUserProfile(updated))
     }
 
     override suspend fun removeMember(
@@ -1611,10 +1968,12 @@ class InMemoryChatRepository : ChatRepository {
         targetUserId: Long,
         nowIso: String
     ): GroupOpResult<Unit> {
+        val requesterRole = when (val ctx = checkGroupConversationAndRole(conversationId, requesterId)) {
+            is GroupOpResult.Ok -> ctx.value
+            is GroupOpResult.Err -> return ctx
+        }
         val roles = memberRolesByConversation[conversationId]
-            ?: return GroupOpResult.Err(404, "NOT_FOUND", "Conversation not found")
-        val requesterRole = roles[requesterId]?.role
-            ?: return GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+            ?: return GroupOpResult.Err(404, "NOT_FOUND", "Target member not found")
         val targetRole = roles[targetUserId]?.role
             ?: return GroupOpResult.Err(404, "NOT_FOUND", "Target member not found")
 
@@ -1702,7 +2061,7 @@ class InMemoryChatRepository : ChatRepository {
                 if (msg.type != "TEXT" || msg.deletedAt != null) {
                     return GroupOpResult.Err(400, "VALIDATION_ERROR", "Only active TEXT messages can be edited")
                 }
-                val updated = withDeliveryStatus(msg.copy(content = trimmed, editedAt = nowIso))
+                val updated = enrichMessage(msg.copy(content = trimmed, editedAt = nowIso))
                 list[idx] = updated
                 return GroupOpResult.Ok(updated)
             }
@@ -1727,12 +2086,24 @@ class InMemoryChatRepository : ChatRepository {
                 if (msg.senderId != userId && role != "OWNER" && role != "ADMIN") {
                     return GroupOpResult.Err(403, "FORBIDDEN", "Insufficient permission to recall message")
                 }
-                val updated = withDeliveryStatus(msg.copy(content = "", deletedAt = msg.deletedAt ?: nowIso))
+                val updated = enrichMessage(msg.copy(content = "", deletedAt = msg.deletedAt ?: nowIso))
                 list[idx] = updated
                 return GroupOpResult.Ok(updated)
             }
         }
         return GroupOpResult.Err(404, "NOT_FOUND", "Message not found")
+    }
+
+    override suspend fun deleteMessage(userId: Long, messageId: Long): DeleteMessageResult {
+        val msg = messagesByConversation.values.asSequence().flatten().firstOrNull { it.id == messageId }
+            ?: return DeleteMessageResult(conversationId = null, deleted = false, isMember = false)
+        val members = membersByConversation[msg.conversationId]
+        if (members == null || userId !in members) {
+            return DeleteMessageResult(conversationId = msg.conversationId, deleted = false, isMember = false)
+        }
+        val hiddenSet = hiddenMessageIdsByUser.computeIfAbsent(userId) { ConcurrentHashMap.newKeySet() }
+        val newlyHidden = hiddenSet.add(messageId)
+        return DeleteMessageResult(conversationId = msg.conversationId, deleted = newlyHidden, isMember = true)
     }
 
     override suspend fun forwardMessage(
@@ -1758,8 +2129,12 @@ class InMemoryChatRepository : ChatRepository {
         if (source.deletedAt != null) {
             return GroupOpResult.Err(400, "VALIDATION_ERROR", "Cannot forward a recalled message")
         }
+        val dedupKey = "$userId:$clientMessageId"
+        dedupIndex[dedupKey]?.let { existing ->
+            return GroupOpResult.Ok(enrichMessage(existing))
+        }
         val newId = nextMessageId.getAndIncrement()
-        val forwarded = withDeliveryStatus(
+        val forwarded = enrichMessage(
             MessageDto(
                 id = newId,
                 clientMessageId = clientMessageId,
@@ -1773,7 +2148,14 @@ class InMemoryChatRepository : ChatRepository {
                 createdAt = nowIso
             )
         )
+        val raced = dedupIndex.putIfAbsent(dedupKey, forwarded)
+        if (raced != null) {
+            return GroupOpResult.Ok(enrichMessage(raced))
+        }
         messagesByConversation.computeIfAbsent(targetConversationId) { CopyOnWriteArrayList() }.add(forwarded)
+        conversations.computeIfPresent(targetConversationId) { _, existingConv ->
+            existingConv.copy(lastMessage = forwarded, updatedAt = nowIso)
+        }
         return GroupOpResult.Ok(forwarded)
     }
 
@@ -1792,6 +2174,9 @@ class InMemoryChatRepository : ChatRepository {
         val members = membersByConversation[msg.conversationId]
         if (members != null && userId !in members) {
             return GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+        }
+        if (msg.deletedAt != null) {
+            return GroupOpResult.Err(409, "CONFLICT", "Cannot react to a recalled message")
         }
         val byEmoji = reactionsByMessage.computeIfAbsent(messageId) { ConcurrentHashMap() }
         val users = byEmoji.computeIfAbsent(trimmedEmoji) { ConcurrentHashMap.newKeySet() }
@@ -1833,6 +2218,7 @@ class InMemoryChatRepository : ChatRepository {
             }
         }
         val clampedLimit = limit.coerceIn(1, 100)
+        val hidden = hiddenMessageIdsByUser[userId].orEmpty()
         val allowedConvIds = if (conversationId != null) {
             listOf(conversationId)
         } else {
@@ -1842,13 +2228,14 @@ class InMemoryChatRepository : ChatRepository {
             .flatMap { cid -> messagesByConversation[cid].orEmpty() }
             .filter { msg ->
                 msg.deletedAt == null &&
+                    msg.id !in hidden &&
                     (cursor == null || msg.id < cursor) &&
                     (msg.content?.contains(trimmed, ignoreCase = true) == true)
             }
             .sortedByDescending { it.id }
 
         val hasMore = matchingDesc.size > clampedLimit
-        val page = (if (hasMore) matchingDesc.take(clampedLimit) else matchingDesc).map { withDeliveryStatus(it) }
+        val page = (if (hasMore) matchingDesc.take(clampedLimit) else matchingDesc).map { enrichMessage(it) }
         val nextCursor = if (hasMore) page.lastOrNull()?.id?.toString() else null
         return GroupOpResult.Ok(CursorPage(items = page, nextCursor = nextCursor, hasMore = hasMore))
     }
@@ -1867,9 +2254,7 @@ class InMemoryChatRepository : ChatRepository {
             ?: return GroupOpResult.Err(404, "NOT_FOUND", "Conversation not found")
         val set = pinnedConversationsByUser.computeIfAbsent(userId) { ConcurrentHashMap.newKeySet() }
         if (pinned) set.add(conversationId) else set.remove(conversationId)
-        val updated = conv.copy(isPinned = pinned)
-        conversations[conversationId] = updated
-        return GroupOpResult.Ok(updated)
+        return GroupOpResult.Ok(buildConversationSummary(conv, userId, isPinned = pinned))
     }
 
     override suspend fun listPinnedMessages(
@@ -1896,6 +2281,11 @@ class InMemoryChatRepository : ChatRepository {
         if (members == null || userId !in members) {
             return GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
         }
+        val msg = messagesByConversation[conversationId]?.firstOrNull { it.id == messageId }
+            ?: return GroupOpResult.Err(404, "NOT_FOUND", "Message not found in this conversation")
+        if (msg.deletedAt != null) {
+            return GroupOpResult.Err(409, "CONFLICT", "Cannot pin a recalled message")
+        }
         val dto = PinnedMessageDto(conversationId, messageId, userId, nowIso)
         pinnedMessagesByConversation
             .computeIfAbsent(conversationId) { ConcurrentHashMap() }[messageId] = dto
@@ -1915,7 +2305,56 @@ class InMemoryChatRepository : ChatRepository {
         return GroupOpResult.Ok(Unit)
     }
 
-    private fun withDeliveryStatus(message: MessageDto): MessageDto {
+    private fun checkGroupConversationAndRole(conversationId: Long, requesterId: Long): GroupOpResult<String> {
+        val conv = conversations[conversationId]
+            ?: return GroupOpResult.Err(404, "NOT_FOUND", "Conversation not found")
+        val role = memberRolesByConversation[conversationId]?.get(requesterId)?.role
+            ?: return GroupOpResult.Err(403, "FORBIDDEN", "Not an active member")
+        if (conv.type != "GROUP") {
+            return GroupOpResult.Err(400, "VALIDATION_ERROR", "Member management is only supported for GROUP conversations")
+        }
+        return GroupOpResult.Ok(role)
+    }
+
+    private fun withUserProfile(member: ConversationMemberDto): ConversationMemberDto {
+        val profile = userProfiles[member.userId] ?: return member
+        return member.copy(
+            displayName = member.displayName ?: profile.first,
+            avatarUrl = member.avatarUrl ?: profile.second
+        )
+    }
+
+    private fun buildConversationSummary(
+        conv: ConversationSummaryDto,
+        userId: Long,
+        isPinned: Boolean
+    ): ConversationSummaryDto {
+        val hidden = hiddenMessageIdsByUser[userId].orEmpty()
+        val visibleMessages = messagesByConversation[conv.id].orEmpty().filter { it.id !in hidden }
+        val enrichedLastMsg = visibleMessages.lastOrNull()?.let { enrichMessage(it) }
+        val lastReadId = lastReadMessageIdByConvUser["${conv.id}:$userId"] ?: 0L
+        val unreadCount = visibleMessages.count {
+            it.id > lastReadId && it.senderId != userId && it.deletedAt == null
+        }
+        return if (conv.type == "DIRECT") {
+            val peerId = membersByConversation[conv.id]?.firstOrNull { it != userId }
+            conv.copy(
+                isPinned = isPinned,
+                unreadCount = unreadCount,
+                lastMessage = enrichedLastMsg,
+                peerUserId = peerId,
+                peerLastSeenAt = peerId?.let { lastSeenByUser[it] }
+            )
+        } else {
+            conv.copy(
+                isPinned = isPinned,
+                unreadCount = unreadCount,
+                lastMessage = enrichedLastMsg
+            )
+        }
+    }
+
+    private fun enrichMessage(message: MessageDto): MessageDto {
         val byRecipient = receiptsByMessage[message.id]
         var anyRead = false
         var anyDelivered = false
@@ -1934,6 +2373,15 @@ class InMemoryChatRepository : ChatRepository {
             anyDelivered -> "DELIVERED"
             else -> "ACCEPTED"
         }
-        return message.copy(deliveryStatus = status)
+        val byEmoji = reactionsByMessage[message.id]
+        val reactions = if (byEmoji.isNullOrEmpty()) {
+            emptyMap()
+        } else {
+            byEmoji.mapNotNull { (emoji, users) ->
+                val list = users.sorted()
+                if (list.isEmpty()) null else emoji to list
+            }.toMap()
+        }
+        return message.copy(deliveryStatus = status, reactions = reactions)
     }
 }
