@@ -8,9 +8,9 @@
 - Android: Kotlin + Jetpack Compose
 - UI: Material 3
 - Architecture: MVVM + Repository
-- Backend dự kiến: Kotlin + Ktor
-- Database dự kiến: PostgreSQL
-- Realtime dự kiến: WebSocket
+- Backend: Kotlin + Ktor
+- Database: PostgreSQL (cần cấu hình để dùng persistence)
+- Realtime: Ktor WebSocket; luồng chat hiện vẫn là khung tích hợp, chưa được xác nhận end-to-end
 - Version Control: Git & GitHub
 
 ## 2. Thành viên
@@ -23,8 +23,8 @@
 
 ## 3. Cấu trúc repository
 
-- `android-app/`: Android Studio Project
-- `backend/`: Ktor Backend (sẽ triển khai)
+- `android-app/`: dự án Android Studio
+- `backend/`: ứng dụng Ktor, AUTH/users và khung CHAT/groups
 - `docs/`: Tài liệu kỹ thuật và rubric
 - `AGENTS.md`: Quy tắc dành cho AI Agent
 
@@ -61,10 +61,15 @@ Compose UI test trên emulator/thiết bị đang kết nối:
 
 ## 5. Backend và migration
 
-- Chạy backend theo hướng dẫn ở `backend/src/main/kotlin/vn/edu/hcmute/androidchat/backend/auth/README.md`.
-- Áp dụng migration theo thứ tự: `backend/migrations/V001__chat_schema_draft.sql`, sau đó `V002__auth_users_sessions.sql`.
-- `DB_URL`, `DB_USER`, `DB_PASSWORD` và `JWT_SECRET` được cấu hình qua môi trường chạy backend; không đưa giá trị thật vào Git.
-- Chạy kiểm thử backend bằng `cd backend` rồi `.\gradlew.bat test`.
+- Yêu cầu JDK 21 cho backend. Chạy từ PowerShell:
+
+      cd backend
+      .\gradlew.bat run
+
+- Trước khi chạy các route cần dữ liệu, cấu hình `DB_URL`, `DB_USER` và `DB_PASSWORD` trong môi trường local. `DB_URL` dùng dạng JDBC, ví dụ `jdbc:postgresql://localhost:5432/android_chat`. Nếu thiếu `DB_URL`, server vẫn khởi động nhưng không tạo PostgreSQL pool; `/health` báo `NOT_CONFIGURED` và thao tác AUTH cần database không dùng được.
+- Cấu hình `JWT_ISSUER`, `JWT_AUDIENCE` và `PORT` nếu cần giá trị khác mặc định. `JWT_SECRET` có secret development fallback khi `APP_ENV=dev` hoặc `test`; production yêu cầu secret được cấp qua môi trường. Không commit giá trị bí mật.
+- Các migration hiện có phải áp dụng thủ công theo thứ tự: `V001__chat_schema_draft.sql`, `V002__auth_users_sessions.sql`, `V003__auth_phone_discovery_and_friends.sql`, `V004__auth_user_blocks.sql`. Gradle chưa cấu hình migration runner.
+- Chạy kiểm thử backend bằng `cd backend` rồi `.\gradlew.bat test`. Các Ktor route tests hiện dùng repository in-memory, không thay thế kiểm thử PostgreSQL.
 
 OTP/password recovery chưa kết nối provider vì nhóm chưa chọn dịch vụ; không có OTP cố định hay bypass production.
 Luồng email/password hiện thực được dùng cho giai đoạn auth-foundation.
@@ -83,14 +88,15 @@ https://stitch.withgoogle.com/projects/11111923560284449667
 
 ## 8. Trạng thái dự án
 
-Android AUTH có luồng đăng ký/đăng nhập email, session provider, tìm người dùng, cập nhật tên/tiểu sử và đăng xuất.
-Backend AUTH có session JWT/refresh có thể thu hồi, hồ sơ người dùng và tìm kiếm/tra cứu theo số điện thoại.
-CHAT/MEDIA vẫn cần nối `AuthTokenProvider` vào HTTP/WebSocket client của họ; chat hiện vẫn là skeleton.
+Android AUTH có đăng ký/đăng nhập email, session provider, tìm kiếm người dùng, danh bạ/lời mời, chặn, cập nhật tên/tiểu sử, ngôn ngữ và theme.
+Backend AUTH có session JWT/refresh có thể thu hồi, hồ sơ, tìm kiếm/tra cứu số điện thoại theo metadata xác minh, quan hệ bạn bè và chặn. Nhóm chưa chọn OTP provider; đăng ký/xác minh OTP chưa được triển khai.
+Màn hình và route CHAT/GROUPS có mặt, nhưng Android chưa có chat transport thật; tin nhắn gửi đi hiện được đánh dấu `FAILED`. Backend chat routes/WebSocket còn là skeleton. CHAT chưa tích hợp `AuthTokenProvider` vào WebSocket; MEDIA chưa tích hợp provider vào HTTP/call. AUTH chưa kiểm soát việc chặn tin nhắn và WebSocket ở CHAT.
+Kết quả kiểm thử local ngày 2026-11-14: Android `testDebugUnitTest` 52 test và backend `test` 12 test đều đạt. Đây là unit/Ktor tests; backend tests dùng repository in-memory. PostgreSQL integration, thiết bị Android, CI và tích hợp toàn nhóm chưa được xác minh.
 
 ## 9. Nguồn tham khảo và AI
 
 Nhóm sử dụng các tài liệu và repository công khai
 để nghiên cứu kỹ thuật.
 
-AI hỗ trợ tạo và rà soát một phần mã AUTH, kiểm thử và tài liệu trong nhánh `feature/auth-email`.
-Đinh Công Huy cần review, hiểu và giải thích phần đóng góp trước khi tích hợp theo rubric.
+AI hỗ trợ tạo và rà soát một phần mã AUTH, kiểm thử, tài liệu bàn giao, phần báo cáo và slide AUTH trong nhánh `feature/auth-email`.
+Đinh Công Huy cần review, hiểu và giải thích phần đóng góp trước khi tích hợp theo rubric. Slide và báo cáo AUTH là phần bàn giao riêng, chưa phải báo cáo hoặc deck cuối cùng của cả nhóm.
