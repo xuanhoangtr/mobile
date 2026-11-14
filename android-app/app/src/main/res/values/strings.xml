@@ -113,6 +113,16 @@
     <string name="contacts_error_friend_request_conflict">A friend request already exists or this user is already a friend.</string>
     <string name="contacts_error_invalid_friend_request_target">This user cannot receive a friend request.</string>
     <string name="contacts_error_invalid_friend_request_id">This friend request is no longer available.</string>
+    <string name="contacts_block_user">Block</string>
+    <string name="contacts_unblock_user">Unblock</string>
+    <string name="contacts_blocked_users">Blocked users</string>
+    <string name="contacts_no_blocked_users">You have not blocked anyone.</string>
+    <string name="contacts_error_block_conflict">This user is already blocked or cannot be blocked.</string>
+    <string name="contacts_error_block_failed">Could not update blocked users. Please try again.</string>
     <string name="contacts_permission_denied">Contact permission was not granted. No contacts were read.</string>
     <string name="contacts_read_failed">Could not read phone numbers from contacts. Please try again.</string>
+    <string name="profile_theme_title">App theme</string>
+    <string name="profile_theme_system">Follow device setting</string>
+    <string name="profile_theme_light">Light</string>
+    <string name="profile_theme_dark">Dark</string>
 </resources>

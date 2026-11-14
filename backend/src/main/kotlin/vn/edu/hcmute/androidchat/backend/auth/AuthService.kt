@@ -119,10 +119,11 @@ internal class AuthService(
         users.toSearchPage(limit)
     }
 
-    fun findByPhone(rawPhone: String): AuthUser {
+    fun findByPhone(rawPhone: String, requesterUserId: Long): AuthUser {
         val normalizedPhone = AuthValidation.normalizeE164(rawPhone)
             ?: throw AuthValidationException("Phone number must use E.164 format")
-        return repository.findDiscoverableUserByPhone(normalizedPhone) ?: throw UserNotFoundException()
+        return repository.findDiscoverableUserByPhone(normalizedPhone, requesterUserId)
+            ?: throw UserNotFoundException()
     }
 
     fun phoneDiscoverySettings(userId: Long): PhoneDiscoverySettings {
@@ -154,6 +155,7 @@ internal class AuthService(
         if (recipientUserId <= 0L) throw AuthValidationException("targetUserId must be positive")
         if (recipientUserId == senderUserId) throw AuthValidationException("Users cannot send friend requests to themselves")
         val recipient = repository.findUserById(recipientUserId) ?: throw UserNotFoundException()
+        if (repository.isBlockedBetween(senderUserId, recipient.id)) throw UserBlockedException()
 
         val created = try {
             repository.createFriendRequest(senderUserId, recipient.id, clock.instant())
@@ -194,6 +196,31 @@ internal class AuthService(
     fun listFriends(userId: Long): FriendsResponse = FriendsResponse(
         items = repository.listFriends(userId).map { it.toPublicUser() }
     )
+
+    fun blockUser(blockerUserId: Long, blockedUserId: Long) {
+        validateUserPair(blockerUserId, blockedUserId)
+        repository.findUserById(blockedUserId) ?: throw UserNotFoundException()
+        repository.blockUser(blockerUserId, blockedUserId, clock.instant())
+    }
+
+    fun unblockUser(blockerUserId: Long, blockedUserId: Long) {
+        validateUserPair(blockerUserId, blockedUserId)
+        repository.findUserById(blockedUserId) ?: throw UserNotFoundException()
+        repository.unblockUser(blockerUserId, blockedUserId)
+    }
+
+    fun listBlockedUsers(blockerUserId: Long): BlockedUsersResponse = BlockedUsersResponse(
+        items = repository.listBlockedUsers(blockerUserId).map { it.toPublicUser() }
+    )
+
+    private fun validateUserPair(ownerUserId: Long, targetUserId: Long) {
+        if (ownerUserId <= 0L || targetUserId <= 0L) {
+            throw AuthValidationException("User IDs must be positive")
+        }
+        if (ownerUserId == targetUserId) {
+            throw AuthValidationException("Users cannot block themselves")
+        }
+    }
 
     private fun transitionFriendRequest(
         requestId: Long,

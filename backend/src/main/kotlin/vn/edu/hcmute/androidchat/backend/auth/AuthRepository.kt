@@ -12,8 +12,12 @@ internal interface AuthRepository {
     fun findUserById(userId: Long): AuthUser?
     fun updateProfile(userId: Long, displayName: String?, bio: String?, now: Instant): AuthUser?
     fun searchUsers(query: String, afterId: Long?, excludeUserId: Long, limit: Int): List<AuthUser>
-    fun findDiscoverableUserByPhone(phone: String): AuthUser?
+    fun findDiscoverableUserByPhone(phone: String, requesterUserId: Long): AuthUser?
     fun updatePhoneDiscovery(userId: Long, discoverable: Boolean, now: Instant): AuthUser?
+    fun isBlockedBetween(firstUserId: Long, secondUserId: Long): Boolean
+    fun blockUser(blockerUserId: Long, blockedUserId: Long, now: Instant)
+    fun unblockUser(blockerUserId: Long, blockedUserId: Long)
+    fun listBlockedUsers(blockerUserId: Long): List<AuthUser>
     fun areFriends(firstUserId: Long, secondUserId: Long): Boolean
     fun createFriendRequest(senderUserId: Long, recipientUserId: Long, now: Instant): FriendRequestRecord
     fun listFriendRequests(userId: Long, incoming: Boolean): List<FriendRequestRecord>
@@ -111,6 +115,11 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
                 FROM users
                 WHERE status = 'ACTIVE' AND id <> ? AND id > ?
                   AND (display_name ILIKE ? OR username ILIKE ?)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM user_blocks b
+                    WHERE (b.blocker_user_id = ? AND b.blocked_user_id = users.id)
+                       OR (b.blocked_user_id = ? AND b.blocker_user_id = users.id)
+                  )
                 ORDER BY id ASC LIMIT ?
                 """.trimIndent()
             ).use { statement ->
@@ -120,21 +129,31 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
                 val pattern = "%$safeQuery%"
                 statement.setString(3, pattern)
                 statement.setString(4, pattern)
-                statement.setInt(5, limit + 1)
+                statement.setLong(5, excludeUserId)
+                statement.setLong(6, excludeUserId)
+                statement.setInt(7, limit + 1)
                 statement.executeQuery().use { result -> result.toAuthUsers() }
             }
         }
 
-    override fun findDiscoverableUserByPhone(phone: String) = database.withConnection { connection ->
+    override fun findDiscoverableUserByPhone(phone: String, requesterUserId: Long) = database.withConnection { connection ->
         connection.prepareStatement(
             """
             SELECT id, email, username, display_name, password_hash, normalized_phone, phone_verified_at,
                    phone_discoverable, avatar_url, bio, privacy_settings::text, created_at, updated_at
             FROM users WHERE normalized_phone = ? AND phone_discoverable = TRUE
               AND phone_verified_at IS NOT NULL AND status = 'ACTIVE'
+              AND id <> ? AND NOT EXISTS (
+                SELECT 1 FROM user_blocks b
+                WHERE (b.blocker_user_id = ? AND b.blocked_user_id = users.id)
+                   OR (b.blocked_user_id = ? AND b.blocker_user_id = users.id)
+              )
             """.trimIndent()
         ).use { statement ->
             statement.setString(1, phone)
+            statement.setLong(2, requesterUserId)
+            statement.setLong(3, requesterUserId)
+            statement.setLong(4, requesterUserId)
             statement.executeQuery().use { result -> if (result.next()) result.toAuthUser() else null }
         }
     }
@@ -159,6 +178,89 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
             }
         }
 
+    override fun isBlockedBetween(firstUserId: Long, secondUserId: Long) = database.withConnection { connection ->
+        connection.prepareStatement(
+            """
+            SELECT 1 FROM user_blocks
+            WHERE (blocker_user_id = ? AND blocked_user_id = ?)
+               OR (blocker_user_id = ? AND blocked_user_id = ?)
+            LIMIT 1
+            """.trimIndent()
+        ).use { statement ->
+            statement.setLong(1, firstUserId)
+            statement.setLong(2, secondUserId)
+            statement.setLong(3, secondUserId)
+            statement.setLong(4, firstUserId)
+            statement.executeQuery().use(ResultSet::next)
+        }
+    }
+
+    override fun blockUser(blockerUserId: Long, blockedUserId: Long, now: Instant) =
+        database.withConnection { connection ->
+            connection.inTransaction {
+                connection.lockFriendPair(blockerUserId, blockedUserId)
+                connection.prepareStatement(
+                    """
+                    INSERT INTO user_blocks(blocker_user_id, blocked_user_id, created_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT (blocker_user_id, blocked_user_id) DO NOTHING
+                    """.trimIndent()
+                ).use { statement ->
+                    statement.setLong(1, blockerUserId)
+                    statement.setLong(2, blockedUserId)
+                    statement.setObject(3, now)
+                    statement.executeUpdate()
+                }
+                // A block also closes pending invitations between the pair so old requests cannot
+                // be accepted after one party has withdrawn consent to contact.
+                connection.prepareStatement(
+                    """
+                    UPDATE friend_requests
+                    SET status = 'CANCELED', responded_at = ?
+                    WHERE status = 'PENDING'
+                      AND LEAST(sender_user_id, recipient_user_id) = LEAST(?, ?)
+                      AND GREATEST(sender_user_id, recipient_user_id) = GREATEST(?, ?)
+                    """.trimIndent()
+                ).use { statement ->
+                    statement.setObject(1, now)
+                    statement.setLong(2, blockerUserId)
+                    statement.setLong(3, blockedUserId)
+                    statement.setLong(4, blockerUserId)
+                    statement.setLong(5, blockedUserId)
+                    statement.executeUpdate()
+                }
+                Unit
+            }
+        }
+
+    override fun unblockUser(blockerUserId: Long, blockedUserId: Long) = database.withConnection { connection ->
+        connection.prepareStatement(
+            "DELETE FROM user_blocks WHERE blocker_user_id = ? AND blocked_user_id = ?"
+        ).use { statement ->
+            statement.setLong(1, blockerUserId)
+            statement.setLong(2, blockedUserId)
+            statement.executeUpdate()
+        }
+        Unit
+    }
+
+    override fun listBlockedUsers(blockerUserId: Long) = database.withConnection { connection ->
+        connection.prepareStatement(
+            """
+            SELECT u.id, u.email, u.username, u.display_name, u.password_hash, u.normalized_phone,
+                   u.phone_verified_at, u.phone_discoverable, u.avatar_url, u.bio,
+                   u.privacy_settings::text, u.created_at, u.updated_at
+            FROM user_blocks b
+            JOIN users u ON u.id = b.blocked_user_id
+            WHERE b.blocker_user_id = ? AND u.status = 'ACTIVE'
+            ORDER BY u.display_name, u.id
+            """.trimIndent()
+        ).use { statement ->
+            statement.setLong(1, blockerUserId)
+            statement.executeQuery().use { result -> result.toAuthUsers() }
+        }
+    }
+
     override fun areFriends(firstUserId: Long, secondUserId: Long) = database.withConnection { connection ->
         connection.prepareStatement(
             """
@@ -178,6 +280,9 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
         database.withConnection { connection ->
             connection.inTransaction {
                 connection.lockFriendPair(senderUserId, recipientUserId)
+                if (connection.isBlockedBetween(senderUserId, recipientUserId)) {
+                    throw UserBlockedException()
+                }
                 if (connection.areFriends(senderUserId, recipientUserId)) {
                     throw AlreadyFriendsException()
                 }
@@ -277,12 +382,19 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
             FROM friend_relationships f
             JOIN users u ON u.id = CASE WHEN f.user_low_id = ? THEN f.user_high_id ELSE f.user_low_id END
             WHERE (f.user_low_id = ? OR f.user_high_id = ?) AND u.status = 'ACTIVE'
+              AND NOT EXISTS (
+                SELECT 1 FROM user_blocks b
+                WHERE (b.blocker_user_id = ? AND b.blocked_user_id = u.id)
+                   OR (b.blocked_user_id = ? AND b.blocker_user_id = u.id)
+              )
             ORDER BY u.display_name, u.id
             """.trimIndent()
         ).use { statement ->
             statement.setLong(1, userId)
             statement.setLong(2, userId)
             statement.setLong(3, userId)
+            statement.setLong(4, userId)
+            statement.setLong(5, userId)
             statement.executeQuery().use { result -> result.toAuthUsers() }
         }
     }
@@ -435,6 +547,22 @@ private fun java.sql.Connection.areFriends(firstUserId: Long, secondUserId: Long
         statement.executeQuery().use(ResultSet::next)
     }
 
+private fun java.sql.Connection.isBlockedBetween(firstUserId: Long, secondUserId: Long): Boolean =
+    prepareStatement(
+        """
+        SELECT 1 FROM user_blocks
+        WHERE (blocker_user_id = ? AND blocked_user_id = ?)
+           OR (blocker_user_id = ? AND blocked_user_id = ?)
+        LIMIT 1
+        """.trimIndent()
+    ).use { statement ->
+        statement.setLong(1, firstUserId)
+        statement.setLong(2, secondUserId)
+        statement.setLong(3, secondUserId)
+        statement.setLong(4, firstUserId)
+        statement.executeQuery().use(ResultSet::next)
+    }
+
 private fun java.sql.Connection.hasPendingFriendRequest(firstUserId: Long, secondUserId: Long): Boolean =
     prepareStatement(
         """
@@ -486,6 +614,7 @@ internal class DuplicateUserException : IllegalStateException("User already exis
 internal class AlreadyFriendsException : IllegalStateException("Users are already friends")
 internal class PendingFriendRequestExistsException : IllegalStateException("A friend request already exists for these users")
 internal class FriendRequestNotFoundException : NoSuchElementException("Friend request was not found")
+internal class UserBlockedException : IllegalStateException("Interaction is blocked between these users")
 
 internal enum class FriendRequestAction(val ownerColumn: String) {
     ACCEPT("recipient_user_id"),

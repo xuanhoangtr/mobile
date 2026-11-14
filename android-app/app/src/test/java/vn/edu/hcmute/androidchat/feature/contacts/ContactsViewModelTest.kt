@@ -1,6 +1,7 @@
 package vn.edu.hcmute.androidchat.feature.contacts
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CompletableDeferred
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -63,6 +64,7 @@ class ContactsViewModelTest {
             friends = listOf(friend)
             requests[FriendRequestDirection.INCOMING] = listOf(incoming)
             requests[FriendRequestDirection.OUTGOING] = listOf(outgoing)
+            blockedUsers = listOf(user(4L, "blocked", "Blocked"))
             phoneDiscoverySettings = PhoneDiscoverySettings(phoneVerified = true, discoverable = false)
         }
         val viewModel = ContactsViewModel(repository, Dispatchers.Unconfined)
@@ -73,8 +75,91 @@ class ContactsViewModelTest {
         assertEquals(listOf(friend), viewModel.uiState.value.friends)
         assertEquals(listOf(incoming), viewModel.uiState.value.incomingRequests)
         assertEquals(listOf(outgoing), viewModel.uiState.value.outgoingRequests)
+        assertEquals(repository.blockedUsers, viewModel.uiState.value.blockedUsers)
         assertEquals(repository.phoneDiscoverySettings, viewModel.uiState.value.phoneDiscovery)
         assertFalse(viewModel.uiState.value.isLoadingConnections)
+    }
+
+    @Test
+    fun loadConnectionsExposesLoadingUntilRepositoryResponds() {
+        val deferredFriends = CompletableDeferred<List<User>>()
+        val friend = user(3L, "friend", "Friend")
+        val repository = FakeContactsRepository().apply { friendsDeferred = deferredFriends }
+        val viewModel = ContactsViewModel(repository, Dispatchers.Unconfined)
+
+        viewModel.loadConnections()
+
+        assertTrue(viewModel.uiState.value.isLoadingConnections)
+        assertFalse(viewModel.uiState.value.hasLoadedConnections)
+
+        deferredFriends.complete(listOf(friend))
+
+        assertFalse(viewModel.uiState.value.isLoadingConnections)
+        assertTrue(viewModel.uiState.value.hasLoadedConnections)
+        assertEquals(listOf(friend), viewModel.uiState.value.friends)
+    }
+
+    @Test
+    fun loadConnectionsFailureCanBeRetriedWithoutReadingContacts() {
+        val repository = FakeContactsRepository().apply {
+            friendsFailure = AuthHttpException(503)
+        }
+        val viewModel = ContactsViewModel(repository, Dispatchers.Unconfined)
+
+        viewModel.loadConnections()
+
+        assertFalse(viewModel.uiState.value.hasLoadedConnections)
+        assertFalse(viewModel.uiState.value.isLoadingConnections)
+        assertEquals("service_unavailable", viewModel.uiState.value.errorMessage)
+        assertTrue(repository.phoneLookupCalls.isEmpty())
+
+        viewModel.loadConnections()
+
+        assertTrue(viewModel.uiState.value.hasLoadedConnections)
+        assertNull(viewModel.uiState.value.errorMessage)
+    }
+
+    @Test
+    fun blockingUserRemovesConnectionsAndSearchMatchesThenUnblockRemovesPrivacyEntry() {
+        val target = user(5L, "target", "Target")
+        val me = user(1L, "me", "Me")
+        val repository = FakeContactsRepository().apply {
+            friends = listOf(target)
+            requests[FriendRequestDirection.INCOMING] = listOf(request("in-target", sender = target, recipient = me))
+            requests[FriendRequestDirection.OUTGOING] = listOf(
+                request("out-target", sender = me, recipient = target),
+                request("rejected-history", sender = me, recipient = target, status = FriendRequestStatus.REJECTED)
+            )
+            searchResult = UserSearchPage(listOf(target), null, false)
+        }
+        val viewModel = ContactsViewModel(repository, Dispatchers.Unconfined)
+        viewModel.loadConnections()
+        viewModel.onQueryChanged("tar")
+        viewModel.searchUsers()
+        assertEquals(listOf(target), viewModel.uiState.value.users)
+
+        viewModel.blockUser(target)
+
+        assertEquals(listOf(target.id), repository.blockedUserIds)
+        assertEquals(listOf(target), viewModel.uiState.value.blockedUsers)
+        assertTrue(viewModel.uiState.value.friends.isEmpty())
+        assertTrue(viewModel.uiState.value.incomingRequests.isEmpty())
+        assertTrue(viewModel.uiState.value.outgoingRequests.isEmpty())
+        assertTrue(repository.requests.values.flatten().any { it.id == "out-target" && it.status == FriendRequestStatus.CANCELED })
+        assertTrue(repository.requests.values.flatten().any { it.id == "rejected-history" && it.status == FriendRequestStatus.REJECTED })
+        assertTrue(viewModel.uiState.value.users.isEmpty())
+        assertNull(viewModel.uiState.value.errorMessage)
+
+        viewModel.unblockUser(target.id)
+
+        assertEquals(listOf(target.id), repository.unblockedUserIds)
+        assertTrue(viewModel.uiState.value.blockedUsers.isEmpty())
+        assertEquals(listOf(target), viewModel.uiState.value.friends)
+        assertTrue(viewModel.uiState.value.incomingRequests.isEmpty())
+        assertTrue(viewModel.uiState.value.outgoingRequests.isEmpty())
+        assertTrue(viewModel.uiState.value.incomingRequests.all { it.status == FriendRequestStatus.PENDING })
+        assertTrue(viewModel.uiState.value.outgoingRequests.all { it.status == FriendRequestStatus.PENDING })
+        assertNull(viewModel.uiState.value.errorMessage)
     }
 
     @Test
@@ -181,6 +266,49 @@ class ContactsViewModelTest {
     }
 
     @Test
+    fun phoneContactSyncFailureKeepsPartialResultsRetryableAndConsumesConsent() {
+        val repository = FakeContactsRepository().apply {
+            phoneLookupResults["+84912345678"] = AuthHttpException(500)
+        }
+        val viewModel = ContactsViewModel(repository, Dispatchers.Unconfined)
+        val numbers = listOf("0912 345 678")
+
+        viewModel.grantPhoneContactsSyncConsent(inAppConsentGranted = true, contactsPermissionGranted = true)
+        viewModel.syncPhoneContacts(numbers)
+
+        assertEquals(listOf("+84912345678"), repository.phoneLookupCalls)
+        assertFalse(viewModel.uiState.value.phoneContactsSyncConsentGranted)
+        assertFalse(viewModel.uiState.value.isSyncingPhoneContacts)
+        assertFalse(viewModel.uiState.value.hasSyncedPhoneContacts)
+        assertEquals("contacts_sync_failed", viewModel.uiState.value.errorMessage)
+
+        repository.phoneLookupResults["+84912345678"] = user(7L, "found", "Found")
+        viewModel.grantPhoneContactsSyncConsent(inAppConsentGranted = true, contactsPermissionGranted = true)
+        viewModel.syncPhoneContacts(numbers)
+
+        assertEquals(listOf("+84912345678", "+84912345678"), repository.phoneLookupCalls)
+        assertEquals(listOf(user(7L, "found", "Found")), viewModel.uiState.value.phoneContactMatches)
+        assertTrue(viewModel.uiState.value.hasSyncedPhoneContacts)
+        assertNull(viewModel.uiState.value.errorMessage)
+    }
+
+    @Test
+    fun emptyPhoneContactsCompleteWithoutNetworkOrPermissionLeak() {
+        val repository = FakeContactsRepository()
+        val viewModel = ContactsViewModel(repository, Dispatchers.Unconfined)
+
+        viewModel.grantPhoneContactsSyncConsent(inAppConsentGranted = true, contactsPermissionGranted = true)
+        viewModel.syncPhoneContacts(emptyList())
+
+        assertTrue(viewModel.uiState.value.hasSyncedPhoneContacts)
+        assertEquals(0, viewModel.uiState.value.phoneContactsTotalCount)
+        assertEquals(0, viewModel.uiState.value.phoneContactsProcessedCount)
+        assertFalse(viewModel.uiState.value.phoneContactsSyncConsentGranted)
+        assertTrue(repository.phoneLookupCalls.isEmpty())
+        assertNull(viewModel.uiState.value.errorMessage)
+    }
+
+    @Test
     fun invalidPhoneSearchDoesNotReachRepository() {
         val repository = FakeContactsRepository()
         val viewModel = ContactsViewModel(repository, Dispatchers.Unconfined)
@@ -197,6 +325,11 @@ private class FakeContactsRepository : ContactsRepository {
     var searchCalls = 0
     var searchResult = UserSearchPage(emptyList(), null, false)
     var friends: List<User> = emptyList()
+    var friendsFailure: Exception? = null
+    var friendsDeferred: CompletableDeferred<List<User>>? = null
+    var blockedUsers: List<User> = emptyList()
+    val blockedUserIds = mutableListOf<Long>()
+    val unblockedUserIds = mutableListOf<Long>()
     val requests = mutableMapOf<FriendRequestDirection, List<FriendRequest>>()
     var phoneDiscoverySettings = PhoneDiscoverySettings(phoneVerified = true, discoverable = false)
     var phoneDiscoveryUpdateCalls = 0
@@ -254,7 +387,47 @@ private class FakeContactsRepository : ContactsRepository {
         canceledIds += requestId
     }
 
-    override suspend fun loadFriends() = friends
+    override suspend fun loadFriends(): List<User> {
+        friendsFailure?.let { failure ->
+            friendsFailure = null
+            throw failure
+        }
+        friendsDeferred?.let { deferred -> return deferred.await() }
+        return friends.filterNot { friend -> blockedUsers.any { it.id == friend.id } }
+    }
+
+    override suspend fun loadBlockedUsers() = blockedUsers
+
+    override suspend fun blockUser(userId: Long) {
+        blockedUserIds += userId
+        val blockedProfile = listOfNotNull(
+            friends.firstOrNull { it.id == userId },
+            sendRequestResult.sender,
+            sendRequestResult.recipient
+        ).firstOrNull { it.id == userId }
+            ?: user(userId, "blocked_$userId", "Blocked $userId")
+        blockedUsers = blockedUsers.filterNot { it.id == userId } + blockedProfile
+        requests.keys.toList().forEach { direction ->
+            requests[direction] = requests[direction].orEmpty().map { request ->
+                if (
+                    request.status == FriendRequestStatus.PENDING &&
+                    (request.sender.id == userId || request.recipient.id == userId)
+                ) {
+                    request.copy(
+                        status = FriendRequestStatus.CANCELED,
+                        respondedAt = "2026-11-14T00:10:00Z"
+                    )
+                } else {
+                    request
+                }
+            }
+        }
+    }
+
+    override suspend fun unblockUser(userId: Long) {
+        unblockedUserIds += userId
+        blockedUsers = blockedUsers.filterNot { it.id == userId }
+    }
 }
 
 private fun user(id: Long, username: String, displayName: String) =

@@ -133,6 +133,61 @@ class ContactsRepositoryTest {
     }
 
     @Test
+    fun blockedUserListAndMutationsMatchTheApiContract() = runBlocking {
+        val blockedJson = publicUserJson(id = 9L, username = "blocked", displayName = "Blocked")
+        val transport = FakeTransport(
+            AuthHttpResponse(200, """{"items":[$blockedJson]}"""),
+            AuthHttpResponse(204, ""),
+            AuthHttpResponse(204, "")
+        )
+        val repository = RemoteContactsRepository(transport, FakeTokenProvider())
+
+        assertEquals("blocked", repository.loadBlockedUsers().single().username)
+        repository.blockUser(9L)
+        repository.unblockUser(9L)
+
+        assertEquals(
+            listOf("GET", "POST", "DELETE"),
+            transport.requests.map { it.method }
+        )
+        assertEquals(
+            listOf("/users/blocked", "/users/9/block", "/users/9/block"),
+            transport.requests.map { it.path }
+        )
+        assertTrue(transport.requests.all { it.body == null })
+    }
+
+    @Test
+    fun blockMutationsRejectInvalidUserIdsBeforeSendingARequest() = runBlocking {
+        val transport = FakeTransport()
+        val repository = RemoteContactsRepository(transport, FakeTokenProvider())
+
+        assertFailsWith<IllegalArgumentException> { repository.blockUser(0L) }
+        assertFailsWith<IllegalArgumentException> { repository.unblockUser(-2L) }
+
+        assertTrue(transport.requests.isEmpty())
+    }
+
+    @Test
+    fun idempotentBlockMutationsRefreshAndRetryOnceAfterUnauthorized() = runBlocking {
+        val transport = FakeTransport(
+            AuthHttpResponse(401, ""),
+            AuthHttpResponse(204, ""),
+            AuthHttpResponse(401, ""),
+            AuthHttpResponse(204, "")
+        )
+        val tokens = FakeTokenProvider()
+        val repository = RemoteContactsRepository(transport, tokens)
+
+        repository.blockUser(9L)
+        repository.unblockUser(9L)
+
+        assertEquals(2, tokens.refreshCalls)
+        assertEquals(listOf("POST", "POST", "DELETE", "DELETE"), transport.requests.map { it.method })
+        assertEquals(listOf("access-1", "access-2", "access-1", "access-2"), transport.requests.map { it.bearerToken })
+    }
+
+    @Test
     fun nonIdempotentFriendRequestPostIsNotReplayedAfter401() = runBlocking {
         val transport = FakeTransport(AuthHttpResponse(401, ""))
         val tokens = FakeTokenProvider()
@@ -148,6 +203,16 @@ class ContactsRepositoryTest {
         assertEquals(1, transport.requests.size)
         assertEquals(0, tokens.refreshCalls)
     }
+}
+
+private inline fun <reified T : Throwable> assertFailsWith(block: () -> Unit) {
+    try {
+        block()
+    } catch (throwable: Throwable) {
+        if (throwable is T) return
+        throw AssertionError("Expected ${T::class.java.name}, got ${throwable::class.java.name}", throwable)
+    }
+    throw AssertionError("Expected ${T::class.java.name}")
 }
 
 private data class RecordedRequest(

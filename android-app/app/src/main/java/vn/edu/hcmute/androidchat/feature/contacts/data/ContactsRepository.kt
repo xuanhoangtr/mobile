@@ -25,6 +25,9 @@ interface ContactsRepository {
     suspend fun rejectRequest(requestId: String): FriendRequest
     suspend fun cancelRequest(requestId: String)
     suspend fun loadFriends(): List<User>
+    suspend fun loadBlockedUsers(): List<User>
+    suspend fun blockUser(userId: Long)
+    suspend fun unblockUser(userId: Long)
 }
 
 class RemoteContactsRepository(
@@ -128,6 +131,37 @@ class RemoteContactsRepository(
         return json.getJSONArray("items").let { array ->
             (0 until array.length()).map { index -> array.getJSONObject(index).toUser() }
         }
+    }
+
+    override suspend fun loadBlockedUsers(): List<User> {
+        val json = JSONObject(
+            authorizedRequest(
+                method = "GET",
+                path = "/users/blocked",
+                retryAfterUnauthorized = true
+            ).body
+        )
+        return json.getJSONArray("items").let { array ->
+            (0 until array.length()).map { index -> array.getJSONObject(index).toUser() }
+        }
+    }
+
+    override suspend fun blockUser(userId: Long) {
+        require(userId > 0) { "Target user ID must be positive" }
+        authorizedRequest(
+            method = "POST",
+            path = "/users/$userId/block",
+            retryAfterUnauthorized = true
+        )
+    }
+
+    override suspend fun unblockUser(userId: Long) {
+        require(userId > 0) { "Target user ID must be positive" }
+        authorizedRequest(
+            method = "DELETE",
+            path = "/users/$userId/block",
+            retryAfterUnauthorized = true
+        )
     }
 
     private suspend fun updateFriendRequest(requestId: String, action: String): FriendRequest {

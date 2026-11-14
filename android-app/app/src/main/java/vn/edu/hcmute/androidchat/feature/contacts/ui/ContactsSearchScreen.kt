@@ -168,7 +168,7 @@ fun ContactsSearchScreen(
             if (
                 state.isLoading || state.isLoadingConnections || state.isSyncingPhoneContacts ||
                 state.isUpdatingPhoneDiscovery || state.isFriendRequestLoading ||
-                state.isSendingFriendRequest || isReadingPhoneNumbers
+                state.isSendingFriendRequest || state.blockedUserInProgressId != null || isReadingPhoneNumbers
             ) {
                 item {
                     CircularProgressIndicator(modifier = Modifier.padding(vertical = 8.dp))
@@ -182,12 +182,15 @@ fun ContactsSearchScreen(
                     item { Text(stringResource(R.string.contacts_user_not_found)) }
                 } else if (phoneResult != null) {
                     item {
-                        UserRow(
+                        ContactUserRow(
                             user = phoneResult,
+                            state = state,
                             actionLabel = stringResource(phoneResult.friendActionLabel(state)),
                             actionEnabled = phoneResult.canSendFriendRequest(state) &&
                                 !state.isFriendRequestLoading && !state.isSendingFriendRequest,
-                            onAction = { viewModel.sendFriendRequest(phoneResult.id) }
+                            onAction = { viewModel.sendFriendRequest(phoneResult.id) },
+                            onBlock = viewModel::blockUser,
+                            onUnblock = viewModel::unblockUser
                         )
                     }
                 }
@@ -199,12 +202,15 @@ fun ContactsSearchScreen(
                     item { Text(stringResource(R.string.contacts_no_results)) }
                 }
                 items(state.users, key = { "search-${it.id}" }) { user ->
-                    UserRow(
+                    ContactUserRow(
                         user = user,
+                        state = state,
                         actionLabel = stringResource(user.friendActionLabel(state)),
                         actionEnabled = user.canSendFriendRequest(state) &&
                             !state.isFriendRequestLoading && !state.isSendingFriendRequest,
-                        onAction = { viewModel.sendFriendRequest(user.id) }
+                        onAction = { viewModel.sendFriendRequest(user.id) },
+                        onBlock = viewModel::blockUser,
+                        onUnblock = viewModel::unblockUser
                     )
                 }
                 if (state.hasMore) {
@@ -305,12 +311,15 @@ fun ContactsSearchScreen(
             if (state.phoneContactMatches.isNotEmpty()) {
                 item { SectionTitle(stringResource(R.string.contacts_phone_matches)) }
                 items(state.phoneContactMatches, key = { "match-${it.id}" }) { user ->
-                    UserRow(
+                    ContactUserRow(
                         user = user,
+                        state = state,
                         actionLabel = stringResource(user.friendActionLabel(state)),
                         actionEnabled = user.canSendFriendRequest(state) &&
                             !state.isFriendRequestLoading && !state.isSendingFriendRequest,
-                        onAction = { viewModel.sendFriendRequest(user.id) }
+                        onAction = { viewModel.sendFriendRequest(user.id) },
+                        onBlock = viewModel::blockUser,
+                        onUnblock = viewModel::unblockUser
                     )
                 }
             }
@@ -349,7 +358,25 @@ fun ContactsSearchScreen(
                 item { Text(stringResource(R.string.contacts_no_friends)) }
             }
             items(state.friends, key = { "friend-${it.id}" }) { user ->
-                UserRow(user = user)
+                ContactUserRow(
+                    user = user,
+                    state = state,
+                    onBlock = viewModel::blockUser,
+                    onUnblock = viewModel::unblockUser
+                )
+            }
+
+            item { SectionTitle(stringResource(R.string.contacts_blocked_users)) }
+            if (state.blockedUsers.isEmpty()) {
+                item { Text(stringResource(R.string.contacts_no_blocked_users)) }
+            }
+            items(state.blockedUsers, key = { "blocked-${it.id}" }) { user ->
+                UserRow(
+                    user = user,
+                    secondaryActionLabel = stringResource(R.string.contacts_unblock_user),
+                    secondaryActionEnabled = state.blockedUserInProgressId == null,
+                    onSecondaryAction = { viewModel.unblockUser(user.id) }
+                )
             }
             item { Spacer(Modifier.height(8.dp)) }
         }
@@ -446,6 +473,9 @@ private fun UserRow(
     actionLabel: String? = null,
     actionEnabled: Boolean = false,
     onAction: () -> Unit = {},
+    secondaryActionLabel: String? = null,
+    secondaryActionEnabled: Boolean = false,
+    onSecondaryAction: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -474,10 +504,46 @@ private fun UserRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        if (actionLabel != null) {
-            TextButton(onClick = onAction, enabled = actionEnabled) { Text(actionLabel) }
+        if (actionLabel != null || secondaryActionLabel != null) {
+            Column(horizontalAlignment = Alignment.End) {
+                if (actionLabel != null) {
+                    TextButton(onClick = onAction, enabled = actionEnabled) { Text(actionLabel) }
+                }
+                if (secondaryActionLabel != null) {
+                    TextButton(onClick = onSecondaryAction, enabled = secondaryActionEnabled) {
+                        Text(secondaryActionLabel)
+                    }
+                }
+            }
         }
     }
+}
+
+@Composable
+private fun ContactUserRow(
+    user: User,
+    state: ContactsUiState,
+    actionLabel: String? = null,
+    actionEnabled: Boolean = false,
+    onAction: () -> Unit = {},
+    onBlock: (User) -> Unit,
+    onUnblock: (Long) -> Unit
+) {
+    val isBlocked = state.blockedUsers.any { it.id == user.id }
+    UserRow(
+        user = user,
+        actionLabel = actionLabel?.takeUnless { isBlocked },
+        actionEnabled = actionEnabled && !isBlocked && state.blockedUserInProgressId == null,
+        onAction = onAction,
+        secondaryActionLabel = stringResource(
+            if (isBlocked) R.string.contacts_unblock_user else R.string.contacts_block_user
+        ),
+        secondaryActionEnabled = state.blockedUserInProgressId == null &&
+            !state.isFriendRequestLoading && !state.isSendingFriendRequest,
+        onSecondaryAction = {
+            if (isBlocked) onUnblock(user.id) else onBlock(user)
+        }
+    )
 }
 
 @Composable
@@ -513,6 +579,7 @@ private fun FriendRequestRow(
 
 private fun User.canSendFriendRequest(state: ContactsUiState): Boolean {
     return state.friends.none { it.id == id } &&
+        state.blockedUsers.none { it.id == id } &&
         state.outgoingRequests.none { it.recipient.id == id } &&
         state.incomingRequests.none { it.sender.id == id }
 }
@@ -540,6 +607,9 @@ private fun String.toContactsStringResource(): Int = when (this) {
     "friend_request_conflict" -> R.string.contacts_error_friend_request_conflict
     "invalid_friend_request_target" -> R.string.contacts_error_invalid_friend_request_target
     "invalid_friend_request_id" -> R.string.contacts_error_invalid_friend_request_id
+    "invalid_block_target" -> R.string.contacts_error_block_failed
+    "contacts_block_conflict" -> R.string.contacts_error_block_conflict
+    "contacts_block_failed" -> R.string.contacts_error_block_failed
     else -> R.string.auth_error_request_failed
 }
 

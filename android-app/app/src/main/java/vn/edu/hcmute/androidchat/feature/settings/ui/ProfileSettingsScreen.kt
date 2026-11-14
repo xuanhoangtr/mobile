@@ -2,11 +2,16 @@ package vn.edu.hcmute.androidchat.feature.settings.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -14,6 +19,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -25,9 +31,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import vn.edu.hcmute.androidchat.R
 import vn.edu.hcmute.androidchat.feature.auth.viewmodel.AuthUiState
+import vn.edu.hcmute.androidchat.feature.settings.model.AppThemePreference
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -38,6 +46,8 @@ fun ProfileSettingsScreen(
     onSaveProfile: () -> Unit,
     onLogout: () -> Unit,
     onBackClick: () -> Unit,
+    themePreference: AppThemePreference,
+    onThemePreferenceChanged: (AppThemePreference) -> Unit,
     modifier: Modifier = Modifier
 ) {
     var confirmLogout by rememberSaveable { mutableStateOf(false) }
@@ -53,7 +63,10 @@ fun ProfileSettingsScreen(
         }
     ) { insets ->
         Column(
-            modifier = Modifier.fillMaxSize().padding(insets).padding(horizontal = 20.dp, vertical = 16.dp),
+            modifier = Modifier.fillMaxSize()
+                .padding(insets)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.Top
         ) {
             Text(
@@ -110,6 +123,36 @@ fun ProfileSettingsScreen(
             }
 
             Spacer(Modifier.height(24.dp))
+            Text(
+                text = stringResource(R.string.profile_theme_title),
+                style = MaterialTheme.typography.titleMedium
+            )
+            Column(Modifier.selectableGroup()) {
+                AppThemePreference.entries.forEach { preference ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = themePreference == preference,
+                                onClick = { onThemePreferenceChanged(preference) },
+                                role = Role.RadioButton
+                            )
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = themePreference == preference,
+                            onClick = null
+                        )
+                        Text(
+                            text = stringResource(preference.toThemeStringResource()),
+                            modifier = Modifier.padding(start = 8.dp)
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(24.dp))
             OutlinedButton(
                 onClick = { confirmLogout = true },
                 enabled = !uiState.isLoading,
@@ -138,6 +181,12 @@ fun ProfileSettingsScreen(
             }
         )
     }
+}
+
+private fun AppThemePreference.toThemeStringResource(): Int = when (this) {
+    AppThemePreference.SYSTEM -> R.string.profile_theme_system
+    AppThemePreference.LIGHT -> R.string.profile_theme_light
+    AppThemePreference.DARK -> R.string.profile_theme_dark
 }
 
 private fun String.toProfileStringResource(): Int = when (this) {

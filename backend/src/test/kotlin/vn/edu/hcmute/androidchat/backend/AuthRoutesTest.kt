@@ -20,6 +20,7 @@ import vn.edu.hcmute.androidchat.backend.auth.AuthRepository
 import vn.edu.hcmute.androidchat.backend.auth.AuthSession
 import vn.edu.hcmute.androidchat.backend.auth.AuthTokenResponse
 import vn.edu.hcmute.androidchat.backend.auth.AuthUser
+import vn.edu.hcmute.androidchat.backend.auth.BlockedUsersResponse
 import vn.edu.hcmute.androidchat.backend.auth.CreateFriendRequestRequest
 import vn.edu.hcmute.androidchat.backend.auth.FriendRequestAction
 import vn.edu.hcmute.androidchat.backend.auth.FriendRequestRecord
@@ -388,6 +389,131 @@ class AuthRoutesTest {
         assertEquals(FriendRequestStatus.CANCELED, canceledHistory.items.first().status)
     }
 
+    @Test
+    fun blockingHidesUsersCancelsPendingRequestsAndCanOnlyBeRemovedByBlocker() = testApplication {
+        val repository = InMemoryAuthRepository()
+        application { module(testConfig, repository) }
+        val owner = client.register("block-owner@example.com", "block_owner", "Block Owner")
+        val target = client.register("block-target@example.com", "block_target", "Block Target")
+        val pendingSender = client.register("pending-sender@example.com", "pending_sender", "Pending Sender")
+        repository.setPhone(target.user.id, "+84912345678", discoverable = true)
+
+        val accepted = client.post("/friend-requests") {
+            bearerAuth(owner.accessToken)
+            contentType(ContentType.Application.Json)
+            setBody("""{"targetUserId":${target.user.id}}""")
+        }
+        val acceptedRequest = AppJson.decodeFromString<FriendRequestView>(accepted.bodyAsText())
+        assertEquals(HttpStatusCode.Created, accepted.status)
+        assertEquals(
+            HttpStatusCode.OK,
+            client.post("/friend-requests/${acceptedRequest.id}/accept") {
+                bearerAuth(target.accessToken)
+            }.status
+        )
+
+        val pending = client.post("/friend-requests") {
+            bearerAuth(pendingSender.accessToken)
+            contentType(ContentType.Application.Json)
+            setBody("""{"targetUserId":${owner.user.id}}""")
+        }
+        val pendingRequest = AppJson.decodeFromString<FriendRequestView>(pending.bodyAsText())
+        assertEquals(HttpStatusCode.Created, pending.status)
+
+        val blockPendingSender = client.post("/users/${pendingSender.user.id}/block") {
+            bearerAuth(owner.accessToken)
+        }
+        assertEquals(HttpStatusCode.NoContent, blockPendingSender.status)
+
+        val blocked = client.post("/users/${target.user.id}/block") {
+            bearerAuth(owner.accessToken)
+        }
+        assertEquals(HttpStatusCode.NoContent, blocked.status)
+        assertTrue(blocked.bodyAsText().isEmpty())
+
+        val blockedAgain = client.post("/users/${target.user.id}/block") {
+            bearerAuth(owner.accessToken)
+        }
+        assertEquals(HttpStatusCode.NoContent, blockedAgain.status)
+
+        val blockedUsersResponse = client.get("/users/blocked") { bearerAuth(owner.accessToken) }
+        assertEquals(HttpStatusCode.OK, blockedUsersResponse.status)
+        val blockedUsers = AppJson.decodeFromString<BlockedUsersResponse>(blockedUsersResponse.bodyAsText())
+        assertEquals(setOf(target.user.id, pendingSender.user.id), blockedUsers.items.map { it.id }.toSet())
+        assertFalse(blockedUsersResponse.bodyAsText().contains("block-target@example.com"))
+        assertFalse(blockedUsersResponse.bodyAsText().contains("+84912345678"))
+
+        val hiddenSearch = client.get("/users/search?q=Block+Target") {
+            bearerAuth(owner.accessToken)
+        }
+        assertEquals(HttpStatusCode.OK, hiddenSearch.status)
+        assertFalse(hiddenSearch.bodyAsText().contains("block_target"))
+
+        val hiddenPhone = client.get("/users/by-phone?phone=%2B84912345678") {
+            bearerAuth(owner.accessToken)
+        }
+        assertEquals(HttpStatusCode.NotFound, hiddenPhone.status)
+
+        val blockedRequest = client.post("/friend-requests") {
+            bearerAuth(target.accessToken)
+            contentType(ContentType.Application.Json)
+            setBody("""{"targetUserId":${owner.user.id}}""")
+        }
+        assertEquals(HttpStatusCode.Forbidden, blockedRequest.status)
+        assertTrue(blockedRequest.bodyAsText().contains("BLOCKED"))
+
+        val pendingHistory = client.get("/friend-requests?direction=incoming") {
+            bearerAuth(owner.accessToken)
+        }
+        val canceledPending = AppJson.decodeFromString<FriendRequestsResponse>(pendingHistory.bodyAsText())
+            .items.single { it.id == pendingRequest.id }
+        assertEquals(FriendRequestStatus.CANCELED, canceledPending.status)
+        assertTrue(canceledPending.respondedAt != null)
+
+        // Accepted friendship is retained in storage, but remains hidden while the block exists.
+        val hiddenFriends = client.get("/friends") { bearerAuth(owner.accessToken) }
+        assertEquals(HttpStatusCode.OK, hiddenFriends.status)
+        assertFalse(hiddenFriends.bodyAsText().contains("block_target"))
+
+        // A target cannot remove a block created by the other user.
+        val wrongOwnerUnblock = client.delete("/users/${owner.user.id}/block") {
+            bearerAuth(target.accessToken)
+        }
+        assertEquals(HttpStatusCode.NoContent, wrongOwnerUnblock.status)
+        assertEquals(
+            HttpStatusCode.NotFound,
+            client.get("/users/by-phone?phone=%2B84912345678") {
+                bearerAuth(owner.accessToken)
+            }.status
+        )
+
+        val selfBlock = client.post("/users/${owner.user.id}/block") {
+            bearerAuth(owner.accessToken)
+        }
+        assertEquals(HttpStatusCode.BadRequest, selfBlock.status)
+        val missingTarget = client.post("/users/99999/block") {
+            bearerAuth(owner.accessToken)
+        }
+        assertEquals(HttpStatusCode.NotFound, missingTarget.status)
+        val unauthenticated = client.get("/users/blocked")
+        assertEquals(HttpStatusCode.Unauthorized, unauthenticated.status)
+
+        val unblocked = client.delete("/users/${target.user.id}/block") {
+            bearerAuth(owner.accessToken)
+        }
+        assertEquals(HttpStatusCode.NoContent, unblocked.status)
+        assertEquals(
+            HttpStatusCode.OK,
+            client.get("/users/by-phone?phone=%2B84912345678") {
+                bearerAuth(owner.accessToken)
+            }.status
+        )
+        val restoredFriends = AppJson.decodeFromString<FriendsResponse>(
+            client.get("/friends") { bearerAuth(owner.accessToken) }.bodyAsText()
+        )
+        assertEquals(listOf("Block Target"), restoredFriends.items.map { it.displayName })
+    }
+
     private suspend fun io.ktor.client.HttpClient.register(
         email: String,
         username: String,
@@ -458,14 +584,16 @@ internal class InMemoryAuthRepository : AuthRepository {
     @Synchronized
     override fun searchUsers(query: String, afterId: Long?, excludeUserId: Long, limit: Int): List<AuthUser> =
         users.values.filter { it.id != excludeUserId && (afterId == null || it.id > afterId) }
+            .filterNot { isBlockedBetween(excludeUserId, it.id) }
             .filter { it.displayName.contains(query, ignoreCase = true) || it.username.contains(query, ignoreCase = true) }
             .sortedBy(AuthUser::id)
             .take(limit + 1)
 
     @Synchronized
-    override fun findDiscoverableUserByPhone(phone: String) =
+    override fun findDiscoverableUserByPhone(phone: String, requesterUserId: Long) =
         users.values.firstOrNull {
-            it.normalizedPhone == phone && it.phoneVerifiedAt != null && it.phoneDiscoverable
+            it.id != requesterUserId && it.normalizedPhone == phone && it.phoneVerifiedAt != null && it.phoneDiscoverable &&
+                !isBlockedBetween(requesterUserId, it.id)
         }
 
     @Synchronized
@@ -478,8 +606,45 @@ internal class InMemoryAuthRepository : AuthRepository {
     @Synchronized
     override fun areFriends(firstUserId: Long, secondUserId: Long) = friendPair(firstUserId, secondUserId) in friendships
 
+    private val blocks = linkedSetOf<Pair<Long, Long>>()
+
+    @Synchronized
+    override fun isBlockedBetween(firstUserId: Long, secondUserId: Long) =
+        (firstUserId to secondUserId) in blocks || (secondUserId to firstUserId) in blocks
+
+    @Synchronized
+    override fun blockUser(blockerUserId: Long, blockedUserId: Long, now: Instant) {
+        blocks += blockerUserId to blockedUserId
+        friendRequests.entries.toList().forEach { (id, request) ->
+            if (
+                request.status == vn.edu.hcmute.androidchat.backend.auth.FriendRequestStatus.PENDING &&
+                friendPair(request.senderUserId, request.recipientUserId) == friendPair(blockerUserId, blockedUserId)
+            ) {
+                friendRequests[id] = request.copy(
+                    status = vn.edu.hcmute.androidchat.backend.auth.FriendRequestStatus.CANCELED,
+                    respondedAt = now
+                )
+            }
+        }
+    }
+
+    @Synchronized
+    override fun unblockUser(blockerUserId: Long, blockedUserId: Long) {
+        blocks.remove(blockerUserId to blockedUserId)
+    }
+
+    @Synchronized
+    override fun listBlockedUsers(blockerUserId: Long) = blocks.asSequence()
+        .filter { it.first == blockerUserId }
+        .mapNotNull { (_, targetId) -> users[targetId] }
+        .sortedWith(compareBy<AuthUser> { it.displayName }.thenBy { it.id })
+        .toList()
+
     @Synchronized
     override fun createFriendRequest(senderUserId: Long, recipientUserId: Long, now: Instant): FriendRequestRecord {
+        if (isBlockedBetween(senderUserId, recipientUserId)) {
+            throw vn.edu.hcmute.androidchat.backend.auth.UserBlockedException()
+        }
         if (areFriends(senderUserId, recipientUserId)) throw vn.edu.hcmute.androidchat.backend.auth.AlreadyFriendsException()
         if (friendRequests.values.any {
                 it.status == vn.edu.hcmute.androidchat.backend.auth.FriendRequestStatus.PENDING &&
@@ -538,6 +703,7 @@ internal class InMemoryAuthRepository : AuthRepository {
     @Synchronized
     override fun listFriends(userId: Long) = friendships.asSequence()
         .filter { userId == it.first || userId == it.second }
+        .filterNot { isBlockedBetween(userId, if (userId == it.first) it.second else it.first) }
         .mapNotNull { pair -> users[if (userId == pair.first) pair.second else pair.first] }
         .sortedWith(compareBy<AuthUser> { it.displayName }.thenBy { it.id })
         .toList()

@@ -94,13 +94,14 @@ private fun Routing.registerUserRoutes(authService: AuthService) {
         }
 
         get("/users/by-phone") {
+            val identity = call.authenticatedIdentityOrRespond() ?: return@get
             val phone = call.request.queryParameters["phone"]
             if (phone.isNullOrBlank()) {
                 call.respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Phone number is required")
                 return@get
             }
             call.respondAuthResult(HttpStatusCode.OK) {
-                authService.findByPhone(phone).toPublicUser()
+                authService.findByPhone(phone, identity.userId).toPublicUser()
             }
         }
 
@@ -165,6 +166,29 @@ private fun Routing.registerUserRoutes(authService: AuthService) {
                 authService.listFriends(identity.userId)
             }
         }
+
+        get("/users/blocked") {
+            val identity = call.authenticatedIdentityOrRespond() ?: return@get
+            call.respondAuthResult(HttpStatusCode.OK) {
+                authService.listBlockedUsers(identity.userId)
+            }
+        }
+
+        post("/users/{targetUserId}/block") {
+            val identity = call.authenticatedIdentityOrRespond() ?: return@post
+            val targetUserId = call.targetUserIdOrRespond() ?: return@post
+            call.respondAuthNoContent {
+                authService.blockUser(identity.userId, targetUserId)
+            }
+        }
+
+        delete("/users/{targetUserId}/block") {
+            val identity = call.authenticatedIdentityOrRespond() ?: return@delete
+            val targetUserId = call.targetUserIdOrRespond() ?: return@delete
+            call.respondAuthNoContent {
+                authService.unblockUser(identity.userId, targetUserId)
+            }
+        }
     }
 }
 
@@ -197,6 +221,12 @@ private suspend fun ApplicationCall.friendRequestIdOrRespond(): Long? =
         null
     }
 
+private suspend fun ApplicationCall.targetUserIdOrRespond(): Long? =
+    parameters["targetUserId"]?.toLongOrNull()?.takeIf { it > 0L } ?: run {
+        respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", "Target user ID must be a positive integer")
+        null
+    }
+
 private suspend inline fun <reified T : Any> ApplicationCall.respondAuthResult(
     successStatus: HttpStatusCode,
     crossinline action: suspend () -> T
@@ -207,6 +237,8 @@ private suspend inline fun <reified T : Any> ApplicationCall.respondAuthResult(
         respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", exception.message ?: "Request is invalid")
     } catch (exception: AuthConflictException) {
         respondError(HttpStatusCode.Conflict, "CONFLICT", exception.message ?: "Request conflicts with existing data")
+    } catch (_: UserBlockedException) {
+        respondError(HttpStatusCode.Forbidden, "BLOCKED", "Interaction is blocked between these users")
     } catch (exception: InvalidCredentialsException) {
         respondError(HttpStatusCode.Unauthorized, "UNAUTHORIZED", exception.message ?: "Credentials are invalid")
     } catch (exception: InvalidRefreshTokenException) {
@@ -234,6 +266,8 @@ private suspend inline fun ApplicationCall.respondAuthNoContent(crossinline acti
         respondError(HttpStatusCode.BadRequest, "VALIDATION_ERROR", exception.message ?: "Request is invalid")
     } catch (exception: AuthConflictException) {
         respondError(HttpStatusCode.Conflict, "CONFLICT", exception.message ?: "Request conflicts with existing data")
+    } catch (_: UserNotFoundException) {
+        respondError(HttpStatusCode.NotFound, "NOT_FOUND", "User was not found")
     } catch (_: FriendRequestNotFoundException) {
         respondError(HttpStatusCode.NotFound, "NOT_FOUND", "Friend request was not found")
     } catch (_: DatabaseUnavailableException) {

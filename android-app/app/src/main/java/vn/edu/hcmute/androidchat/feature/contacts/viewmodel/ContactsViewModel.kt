@@ -35,6 +35,7 @@ data class ContactsUiState(
     val friends: List<User> = emptyList(),
     val incomingRequests: List<FriendRequest> = emptyList(),
     val outgoingRequests: List<FriendRequest> = emptyList(),
+    val blockedUsers: List<User> = emptyList(),
     val phoneDiscovery: PhoneDiscoverySettings? = null,
     val hasLoadedConnections: Boolean = false,
     val isLoadingConnections: Boolean = false,
@@ -42,6 +43,7 @@ data class ContactsUiState(
     val isFriendRequestLoading: Boolean = false,
     val friendRequestInProgressId: String? = null,
     val isSendingFriendRequest: Boolean = false,
+    val blockedUserInProgressId: Long? = null,
     val phoneContactMatches: List<User> = emptyList(),
     val phoneContactsProcessedCount: Int = 0,
     val phoneContactsTotalCount: Int = 0,
@@ -174,17 +176,27 @@ class ContactsViewModel(
     fun loadConnections() {
         if (_uiState.value.isLoadingConnections) return
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoadingConnections = true, errorMessage = null) }
+            _uiState.update {
+                it.copy(
+                    isLoadingConnections = true,
+                    hasLoadedConnections = false,
+                    errorMessage = null
+                )
+            }
             try {
                 val friends = repository.loadFriends()
                 val incoming = repository.loadFriendRequests(FriendRequestDirection.INCOMING)
+                    .filter { it.status == FriendRequestStatus.PENDING }
                 val outgoing = repository.loadFriendRequests(FriendRequestDirection.OUTGOING)
+                    .filter { it.status == FriendRequestStatus.PENDING }
+                val blocked = repository.loadBlockedUsers()
                 val phoneDiscovery = repository.getPhoneDiscoverySettings()
                 _uiState.update {
                     it.copy(
                         friends = friends,
                         incomingRequests = incoming,
                         outgoingRequests = outgoing,
+                        blockedUsers = blocked,
                         phoneDiscovery = phoneDiscovery,
                         hasLoadedConnections = true,
                         isLoadingConnections = false
@@ -249,6 +261,83 @@ class ContactsViewModel(
             null
         }) { current, _ ->
             current.copy(outgoingRequests = current.outgoingRequests.filterNot { it.id == requestId })
+        }
+    }
+
+    fun blockUser(user: User) {
+        if (user.id <= 0L) {
+            _uiState.update { it.copy(errorMessage = "invalid_block_target") }
+            return
+        }
+        if (_uiState.value.blockedUserInProgressId != null) return
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(blockedUserInProgressId = user.id, errorMessage = null)
+            }
+            try {
+                repository.blockUser(user.id)
+                _uiState.update { current ->
+                    current.copy(
+                        users = current.users.filterNot { it.id == user.id },
+                        phoneResult = current.phoneResult?.takeUnless { it.id == user.id },
+                        phoneSearchCompleted = current.phoneSearchCompleted && current.phoneResult?.id != user.id,
+                        friends = current.friends.filterNot { it.id == user.id },
+                        incomingRequests = current.incomingRequests.filterNot {
+                            it.sender.id == user.id || it.recipient.id == user.id
+                        },
+                        outgoingRequests = current.outgoingRequests.filterNot {
+                            it.sender.id == user.id || it.recipient.id == user.id
+                        },
+                        phoneContactMatches = current.phoneContactMatches.filterNot { it.id == user.id },
+                        blockedUsers = current.blockedUsers.upsert(user),
+                        blockedUserInProgressId = null
+                    )
+                }
+            } catch (exception: CancellationException) {
+                throw exception
+            } catch (exception: Exception) {
+                _uiState.update {
+                    it.copy(
+                        blockedUserInProgressId = null,
+                        errorMessage = exception.toBlockUiError()
+                    )
+                }
+            }
+        }
+    }
+
+    fun unblockUser(userId: Long) {
+        if (userId <= 0L) {
+            _uiState.update { it.copy(errorMessage = "invalid_block_target") }
+            return
+        }
+        if (_uiState.value.blockedUserInProgressId != null) return
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(blockedUserInProgressId = userId, errorMessage = null)
+            }
+            try {
+                repository.unblockUser(userId)
+                _uiState.update { current ->
+                    current.copy(
+                        blockedUsers = current.blockedUsers.filterNot { it.id == userId },
+                        blockedUserInProgressId = null
+                    )
+                }
+                // An accepted friendship is retained by the backend while blocked and becomes visible again after unblock.
+                loadConnections()
+            } catch (exception: CancellationException) {
+                throw exception
+            } catch (exception: Exception) {
+                _uiState.update {
+                    it.copy(
+                        blockedUserInProgressId = null,
+                        errorMessage = exception.toBlockUiError()
+                    )
+                }
+            }
         }
     }
 
@@ -366,9 +455,9 @@ class ContactsViewModel(
                 _uiState.update {
                     it.copy(
                         phoneContactMatches = matches.distinctBy(User::id),
-                        hasSyncedPhoneContacts = true,
+                        hasSyncedPhoneContacts = false,
                         isSyncingPhoneContacts = false,
-                        errorMessage = exception.toUiError()
+                        errorMessage = exception.toContactSyncUiError()
                     )
                 }
             }
@@ -433,6 +522,28 @@ class ContactsViewModel(
         }
         is AuthNetworkException -> "network_unavailable"
         else -> "request_failed"
+    }
+
+    private fun Exception.toBlockUiError(): String = when (this) {
+        is AuthHttpException -> when (statusCode) {
+            401 -> "session_expired"
+            404 -> "user_not_found"
+            409 -> "contacts_block_conflict"
+            503 -> "service_unavailable"
+            else -> "contacts_block_failed"
+        }
+        is AuthNetworkException -> "network_unavailable"
+        else -> "contacts_block_failed"
+    }
+
+    private fun Exception.toContactSyncUiError(): String = when (this) {
+        is AuthHttpException -> when (statusCode) {
+            401 -> "session_expired"
+            503 -> "service_unavailable"
+            else -> "contacts_sync_failed"
+        }
+        is AuthNetworkException -> "network_unavailable"
+        else -> "contacts_sync_failed"
     }
 
     private fun List<FriendRequest>.upsert(request: FriendRequest): List<FriendRequest> =

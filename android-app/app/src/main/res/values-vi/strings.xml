@@ -113,6 +113,16 @@
     <string name="contacts_error_friend_request_conflict">Lời mời đã tồn tại hoặc người dùng này đã là bạn.</string>
     <string name="contacts_error_invalid_friend_request_target">Không thể gửi lời mời đến người dùng này.</string>
     <string name="contacts_error_invalid_friend_request_id">Lời mời kết bạn này không còn khả dụng.</string>
+    <string name="contacts_block_user">Chặn</string>
+    <string name="contacts_unblock_user">Bỏ chặn</string>
+    <string name="contacts_blocked_users">Người dùng đã chặn</string>
+    <string name="contacts_no_blocked_users">Bạn chưa chặn ai.</string>
+    <string name="contacts_error_block_conflict">Người dùng đã bị chặn hoặc không thể chặn.</string>
+    <string name="contacts_error_block_failed">Không thể cập nhật danh sách chặn. Vui lòng thử lại.</string>
     <string name="contacts_permission_denied">Chưa được cấp quyền danh bạ. Ứng dụng chưa đọc danh bạ.</string>
     <string name="contacts_read_failed">Không thể đọc số điện thoại từ danh bạ. Vui lòng thử lại.</string>
+    <string name="profile_theme_title">Giao diện ứng dụng</string>
+    <string name="profile_theme_system">Theo thiết bị</string>
+    <string name="profile_theme_light">Sáng</string>
+    <string name="profile_theme_dark">Tối</string>
 </resources>

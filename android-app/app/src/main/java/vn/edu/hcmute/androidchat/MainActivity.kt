@@ -6,12 +6,15 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import vn.edu.hcmute.androidchat.feature.chat.ui.ChatListScreen
 import vn.edu.hcmute.androidchat.feature.chat.ui.ChatRoomScreen
 import vn.edu.hcmute.androidchat.feature.chat.viewmodel.ChatListViewModel
@@ -23,6 +26,9 @@ import vn.edu.hcmute.androidchat.feature.contacts.ui.ContactsSearchScreen
 import vn.edu.hcmute.androidchat.feature.contacts.viewmodel.ContactsViewModel
 import vn.edu.hcmute.androidchat.feature.groups.ui.CreateGroupScreen
 import vn.edu.hcmute.androidchat.feature.groups.viewmodel.CreateGroupViewModel
+import vn.edu.hcmute.androidchat.feature.settings.data.AuthAppSettingsStore
+import vn.edu.hcmute.androidchat.feature.settings.model.AppThemePreference
+import vn.edu.hcmute.androidchat.feature.settings.model.resolveDarkTheme
 import vn.edu.hcmute.androidchat.feature.settings.ui.ProfileSettingsScreen
 import vn.edu.hcmute.androidchat.ui.theme.AndroidChatTheme
 
@@ -36,6 +42,7 @@ private enum class SkeletonRoute {
 
 class MainActivity : ComponentActivity() {
     private val authFeature by lazy { AuthFeature(applicationContext, authApiBaseUrl()) }
+    private val appSettingsStore by lazy { AuthAppSettingsStore(applicationContext) }
     private val authViewModel: AuthViewModel by viewModels { authFeature.viewModelFactory }
     private val contactsViewModel: ContactsViewModel by viewModels { authFeature.contactsViewModelFactory }
     private val chatListViewModel: ChatListViewModel by viewModels()
@@ -46,7 +53,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            AndroidChatTheme {
+            val themePreference by appSettingsStore.themePreference.collectAsState(
+                initial = AppThemePreference.SYSTEM
+            )
+            val settingsScope = rememberCoroutineScope()
+            AndroidChatTheme(
+                darkTheme = themePreference.resolveDarkTheme(isSystemInDarkTheme())
+            ) {
                 var currentRoute by rememberSaveable { mutableStateOf(SkeletonRoute.CHAT_LIST) }
                 val authState by authViewModel.uiState.collectAsState()
 
@@ -114,7 +127,11 @@ class MainActivity : ComponentActivity() {
                             onBioChanged = authViewModel::onProfileBioChanged,
                             onSaveProfile = authViewModel::saveProfile,
                             onLogout = authViewModel::logout,
-                            onBackClick = { currentRoute = SkeletonRoute.CHAT_LIST }
+                            onBackClick = { currentRoute = SkeletonRoute.CHAT_LIST },
+                            themePreference = themePreference,
+                            onThemePreferenceChanged = { preference ->
+                                settingsScope.launch { appSettingsStore.setThemePreference(preference) }
+                            }
                         )
                     }
                 }

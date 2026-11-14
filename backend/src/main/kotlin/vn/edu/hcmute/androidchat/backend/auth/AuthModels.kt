@@ -113,6 +113,9 @@ data class FriendRequestsResponse(val items: List<FriendRequestView>)
 data class FriendsResponse(val items: List<PublicUser>)
 
 @Serializable
+data class BlockedUsersResponse(val items: List<PublicUser>)
+
+@Serializable
 data class PublicUser(
     val id: Long,
     @EncodeDefault(EncodeDefault.Mode.NEVER)
