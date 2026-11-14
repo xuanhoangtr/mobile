@@ -1,7 +1,9 @@
 package vn.edu.hcmute.androidchat.backend.auth
 
 import vn.edu.hcmute.androidchat.backend.common.DatabaseManager
+import java.sql.PreparedStatement
 import java.sql.ResultSet
+import java.sql.Types
 import java.sql.Timestamp
 import java.time.Instant
 import java.util.UUID
@@ -49,8 +51,8 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
                 statement.setString(2, username)
                 statement.setString(3, displayName)
                 statement.setString(4, passwordHash)
-                statement.setObject(5, now)
-                statement.setObject(6, now)
+                statement.setInstant(5, now)
+                statement.setInstant(6, now)
                 statement.executeQuery().use { result ->
                     check(result.next()) { "User insert did not return a row" }
                     result.toAuthUser()
@@ -100,7 +102,7 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
                 statement.setString(1, displayName)
                 statement.setBoolean(2, bio != null)
                 statement.setString(3, bio)
-                statement.setObject(4, now)
+                statement.setInstant(4, now)
                 statement.setLong(5, userId)
                 statement.executeQuery().use { result -> if (result.next()) result.toAuthUser() else null }
             }
@@ -171,7 +173,7 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
                 """.trimIndent()
             ).use { statement ->
                 statement.setBoolean(1, discoverable)
-                statement.setObject(2, now)
+                statement.setInstant(2, now)
                 statement.setLong(3, userId)
                 statement.setBoolean(4, discoverable)
                 statement.executeQuery().use { result -> if (result.next()) result.toAuthUser() else null }
@@ -208,7 +210,7 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
                 ).use { statement ->
                     statement.setLong(1, blockerUserId)
                     statement.setLong(2, blockedUserId)
-                    statement.setObject(3, now)
+                    statement.setInstant(3, now)
                     statement.executeUpdate()
                 }
                 // A block also closes pending invitations between the pair so old requests cannot
@@ -222,7 +224,7 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
                       AND GREATEST(sender_user_id, recipient_user_id) = GREATEST(?, ?)
                     """.trimIndent()
                 ).use { statement ->
-                    statement.setObject(1, now)
+                    statement.setInstant(1, now)
                     statement.setLong(2, blockerUserId)
                     statement.setLong(3, blockedUserId)
                     statement.setLong(4, blockerUserId)
@@ -298,7 +300,7 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
                 ).use { statement ->
                     statement.setLong(1, senderUserId)
                     statement.setLong(2, recipientUserId)
-                    statement.setObject(3, now)
+                    statement.setInstant(3, now)
                     statement.executeQuery().use { result ->
                         check(result.next()) { "Friend request insert did not return a row" }
                         result.toFriendRequestRecord()
@@ -347,7 +349,7 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
                 """.trimIndent()
             ).use { statement ->
                 statement.setString(1, newStatus.name)
-                statement.setObject(2, now)
+                statement.setInstant(2, now)
                 statement.setLong(3, requestId)
                 statement.setLong(4, actorUserId)
                 statement.executeQuery().use { result -> if (result.next()) result.toFriendRequestRecord() else null }
@@ -365,7 +367,7 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
                     statement.setLong(2, updated.recipientUserId)
                     statement.setLong(3, updated.senderUserId)
                     statement.setLong(4, updated.recipientUserId)
-                    statement.setObject(5, now)
+                    statement.setInstant(5, now)
                     statement.executeUpdate()
                 }
             }
@@ -412,13 +414,13 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
                 statement.setObject(1, session.id)
                 statement.setLong(2, session.userId)
                 statement.setString(3, session.refreshTokenHash)
-                statement.setObject(4, session.createdAt)
-                statement.setObject(5, session.accessTokenExpiresAt)
-                statement.setObject(6, session.refreshTokenExpiresAt)
-                statement.setObject(7, session.revokedAt)
+                statement.setInstant(4, session.createdAt)
+                statement.setInstant(5, session.accessTokenExpiresAt)
+                statement.setInstant(6, session.refreshTokenExpiresAt)
+                statement.setInstant(7, session.revokedAt)
                 statement.setString(8, session.deviceName)
                 statement.setString(9, session.clientPlatform)
-                statement.setObject(10, session.lastUsedAt)
+                statement.setInstant(10, session.lastUsedAt)
                 statement.executeUpdate()
             }
         }
@@ -442,12 +444,12 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
             """.trimIndent()
         ).use { statement ->
             statement.setString(1, newHash)
-            statement.setObject(2, accessExpiresAt)
-            statement.setObject(3, refreshExpiresAt)
-            statement.setObject(4, now)
-            statement.setObject(5, now)
+            statement.setInstant(2, accessExpiresAt)
+            statement.setInstant(3, refreshExpiresAt)
+            statement.setInstant(4, now)
+            statement.setInstant(5, now)
             statement.setString(6, oldHash)
-            statement.setObject(7, now)
+            statement.setInstant(7, now)
             statement.executeQuery().use { result -> if (result.next()) result.toAuthSession() else null }
         }
     }
@@ -460,7 +462,7 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
                 WHERE id = ? AND refresh_token_hash = ? AND user_id = ? AND revoked_at IS NULL
                 """.trimIndent()
             ).use { statement ->
-                statement.setObject(1, now)
+                statement.setInstant(1, now)
                 statement.setObject(2, sessionId)
                 statement.setString(3, refreshTokenHash)
                 statement.setLong(4, userId)
@@ -479,8 +481,8 @@ internal class PostgresAuthRepository(private val database: DatabaseManager) : A
         ).use { statement ->
             statement.setObject(1, sessionId)
             statement.setLong(2, userId)
-            statement.setObject(3, now)
-            statement.setObject(4, now)
+            statement.setInstant(3, now)
+            statement.setInstant(4, now)
             statement.executeQuery().use { result -> if (result.next()) result.toAuthSession() else null }
         }
     }
@@ -620,4 +622,9 @@ internal enum class FriendRequestAction(val ownerColumn: String) {
     ACCEPT("recipient_user_id"),
     REJECT("recipient_user_id"),
     CANCEL("sender_user_id")
+}
+
+private fun PreparedStatement.setInstant(index: Int, value: Instant?) {
+    if (value == null) setNull(index, Types.TIMESTAMP_WITH_TIMEZONE)
+    else setTimestamp(index, Timestamp.from(value))
 }

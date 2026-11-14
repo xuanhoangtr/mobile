@@ -2,6 +2,8 @@ package vn.edu.hcmute.androidchat.ui.theme
 
 import android.os.Build
 import android.content.res.Configuration
+import androidx.activity.compose.LocalActivityResultRegistryOwner
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -10,9 +12,11 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.ProvidedValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import java.util.Locale
 import vn.edu.hcmute.androidchat.feature.settings.model.AppLanguage
 import vn.edu.hcmute.androidchat.feature.settings.model.localeTagOrNull
@@ -49,19 +53,28 @@ fun AndroidChatTheme(
 ) {
     val baseContext = LocalContext.current
     val baseConfiguration = LocalConfiguration.current
-    val localeConfiguration = remember(baseConfiguration, appLanguage) {
+    val activityResultRegistryOwner = LocalActivityResultRegistryOwner.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val backPressedDispatcherOwner = LocalOnBackPressedDispatcherOwner.current
+    val localeTag = appLanguage.localeTagOrNull()
+    val localeConfiguration = remember(baseConfiguration, localeTag) {
         Configuration(baseConfiguration).apply {
-            appLanguage.localeTagOrNull()?.let { setLocale(Locale.forLanguageTag(it)) }
+            localeTag?.let { setLocale(Locale.forLanguageTag(it)) }
         }
     }
-    val localizedContext = remember(baseContext, localeConfiguration) {
-        baseContext.createConfigurationContext(localeConfiguration)
+    val localizedContext = remember(baseContext, localeConfiguration, localeTag) {
+        if (localeTag == null) baseContext
+        else baseContext.createConfigurationContext(localeConfiguration)
+    }
+    val providedValues = buildList<ProvidedValue<*>> {
+        add(LocalContext provides localizedContext)
+        add(LocalConfiguration provides localeConfiguration)
+        activityResultRegistryOwner?.let { add(LocalActivityResultRegistryOwner provides it) }
+        add(LocalLifecycleOwner provides lifecycleOwner)
+        backPressedDispatcherOwner?.let { add(LocalOnBackPressedDispatcherOwner provides it) }
     }
 
-    CompositionLocalProvider(
-        LocalContext provides localizedContext,
-        LocalConfiguration provides localeConfiguration
-    ) {
+    CompositionLocalProvider(*providedValues.toTypedArray()) {
         val colorScheme = when {
             dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
                 if (darkTheme) dynamicDarkColorScheme(localizedContext)
