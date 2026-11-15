@@ -32,6 +32,12 @@ data class PushTokenResponse(
     val registered: Boolean
 )
 
+data class UserDeviceToken(
+    val userId: Long,
+    val deviceId: String,
+    val token: String
+)
+
 /** Stores device push tokens in PostgreSQL when configured, with an in-memory fallback for tests. */
 class PushTokenRegistry(private val dataSource: DataSource? = null) {
     private val tokens = ConcurrentHashMap<Long, MutableMap<String, String>>()
@@ -80,6 +86,64 @@ class PushTokenRegistry(private val dataSource: DataSource? = null) {
             }
         }
         tokens[userId]?.remove(deviceId)
+    }
+
+    suspend fun activeTokensForUsers(userIds: Set<Long>): List<UserDeviceToken> {
+        if (userIds.isEmpty()) return emptyList()
+        if (dataSource != null) {
+            return withContext(Dispatchers.IO) {
+                val results = mutableListOf<UserDeviceToken>()
+                dataSource.connection.use { conn ->
+                    val sql = """
+                        SELECT user_id, device_id, token
+                        FROM device_push_tokens
+                        WHERE enabled = TRUE AND token <> '' AND user_id = ANY (?)
+                    """.trimIndent()
+                    conn.prepareStatement(sql).use { stmt ->
+                        val arr = conn.createArrayOf("bigint", userIds.toTypedArray())
+                        stmt.setArray(1, arr)
+                        stmt.executeQuery().use { rs ->
+                            while (rs.next()) {
+                                results.add(
+                                    UserDeviceToken(
+                                        userId = rs.getLong("user_id"),
+                                        deviceId = rs.getString("device_id"),
+                                        token = rs.getString("token")
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+                results
+            }
+        }
+        return userIds.flatMap { uid ->
+            tokens[uid]?.entries
+                ?.filter { it.value.isNotBlank() }
+                ?.map { UserDeviceToken(userId = uid, deviceId = it.key, token = it.value) }
+                .orEmpty()
+        }
+    }
+
+    suspend fun removeTokenByValue(token: String) {
+        if (token.isBlank()) return
+        if (dataSource != null) {
+            withContext(Dispatchers.IO) {
+                dataSource.connection.use { conn ->
+                    conn.prepareStatement(
+                        "DELETE FROM device_push_tokens WHERE token = ?"
+                    ).use { stmt ->
+                        stmt.setString(1, token)
+                        stmt.executeUpdate()
+                    }
+                }
+            }
+        }
+        tokens.values.forEach { map ->
+            val keysToRemove = map.entries.filter { it.value == token }.map { it.key }
+            keysToRemove.forEach { map.remove(it) }
+        }
     }
 
     private fun validate(request: PushTokenRequest) {

@@ -41,7 +41,10 @@ import vn.edu.hcmute.androidchat.backend.common.DatabaseUnavailableException
 import vn.edu.hcmute.androidchat.backend.common.HealthResponse
 import vn.edu.hcmute.androidchat.backend.common.configureJwtAuth
 import vn.edu.hcmute.androidchat.backend.groups.registerGroupRoutes
+import vn.edu.hcmute.androidchat.backend.media.FirebaseAdminPushSender
+import vn.edu.hcmute.androidchat.backend.media.PushTokenRegistry
 import vn.edu.hcmute.androidchat.backend.media.configureMediaFoundation
+import vn.edu.hcmute.androidchat.backend.media.dispatchOfflinePushEvent
 
 fun main() {
     val config = AppConfig.fromEnv()
@@ -116,9 +119,22 @@ internal fun Application.module(
     if (authRepositoryOverride != null || dbManager.dataSource != null) {
         installAuthSessionValidation(config, authService)
     }
-    val chatSessions = ChatSessionRegistry()
+    val pushTokenRegistry = PushTokenRegistry(dbManager.dataSource)
+    val fcmCredentialsPath = System.getenv("FIREBASE_CREDENTIALS_PATH")
+        ?: System.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        ?: System.getProperty("firebase.credentials.path")
+    val pushNotificationSender = FirebaseAdminPushSender(
+        registry = pushTokenRegistry,
+        credentialsPath = fcmCredentialsPath
+    )
+    val chatSessions = ChatSessionRegistry(
+        onOfflineBroadcast = { offlineIds, type, payload ->
+            dispatchOfflinePushEvent(pushNotificationSender, offlineIds, type, payload)
+        }
+    )
     configureMediaFoundation(
         config = config,
+        pushTokenRegistry = pushTokenRegistry,
         dataSource = dbManager.dataSource,
         isConversationMember = { convId, uid -> uid in chatRepository.activeMemberIds(convId) },
         onCallEvent = { targets, type, payload ->

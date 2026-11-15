@@ -11,6 +11,7 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import org.slf4j.LoggerFactory
@@ -27,7 +28,9 @@ private val wsLogger = LoggerFactory.getLogger("ChatWebSocket")
 /**
  * Tracks active WebSocket sessions per authenticated user ID for realtime delivery.
  */
-class ChatSessionRegistry {
+class ChatSessionRegistry(
+    private val onOfflineBroadcast: suspend (offlineUserIds: Set<Long>, type: String, payload: JsonElement) -> Unit = { _, _, _ -> }
+) {
     private val sessionsByUser = ConcurrentHashMap<Long, MutableSet<DefaultWebSocketServerSession>>()
 
     fun register(userId: Long, session: DefaultWebSocketServerSession): Boolean {
@@ -59,15 +62,33 @@ class ChatSessionRegistry {
         requestId: String?,
         payload: T
     ) {
+        sendEventToUsers(
+            userIds = userIds,
+            type = type,
+            requestId = requestId,
+            payloadJson = AppJson.encodeToJsonElement(payload)
+        )
+    }
+
+    suspend fun sendEventToUsers(
+        userIds: Set<Long>,
+        type: String,
+        requestId: String?,
+        payloadJson: JsonElement
+    ) {
         val frameText = AppJson.encodeToString(
             WsEnvelope(
                 type = type,
                 requestId = requestId,
                 timestamp = Instant.now().toString(),
-                payload = AppJson.encodeToJsonElement(payload)
+                payload = payloadJson
             )
         )
         sendFrameToUsers(userIds, frameText)
+        val offlineUserIds = userIds.filterTo(mutableSetOf()) { !isUserOnline(it) }
+        if (offlineUserIds.isNotEmpty()) {
+            runCatching { onOfflineBroadcast(offlineUserIds, type, payloadJson) }
+        }
     }
 
     suspend fun sendFrameToUsers(userIds: Set<Long>, frameText: String) {
