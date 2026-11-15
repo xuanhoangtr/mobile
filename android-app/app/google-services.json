@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "910421979927",
+    "project_id": "android-chat-hcmute",
+    "storage_bucket": "android-chat-hcmute.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:910421979927:android:f30a603f12334db1b4fd52",
+        "android_client_info": {
+          "package_name": "vn.edu.hcmute.androidchat"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC3knW4KukD0ACsBGl4zGs1BLddLc6U-FI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

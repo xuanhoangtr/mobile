@@ -1,0 +1,178 @@
+package vn.edu.hcmute.androidchat.feature.groups.ui
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import vn.edu.hcmute.androidchat.R
+import vn.edu.hcmute.androidchat.feature.chat.ui.ChatStitchTokens
+import vn.edu.hcmute.androidchat.feature.groups.model.GroupCreateUiState
+
+/**
+ * Group creation skeleton screen (Sprint C, D11-D15).
+ * Note: VISUAL_UNVERIFIED — uses temporary Material 3 form layout.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CreateGroupScreen(
+    uiState: GroupCreateUiState,
+    onBackClick: () -> Unit,
+    onGroupNameChange: (String) -> Unit,
+    onToggleMember: (Long) -> Unit,
+    onSubmitClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Scaffold(
+        modifier = modifier.fillMaxSize(),
+        containerColor = ChatStitchTokens.ChatSurfaceBackground,
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.group_create_title)) },
+                navigationIcon = {
+                    IconButton(onClick = onBackClick) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.chat_back),
+                            tint = ChatStitchTokens.TextPrimary
+                        )
+                    }
+                }
+            )
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(16.dp)
+        ) {
+            OutlinedTextField(
+                value = uiState.groupName,
+                onValueChange = onGroupNameChange,
+                label = { Text(stringResource(R.string.group_name_hint)) },
+                singleLine = true,
+                enabled = !uiState.isSubmitting,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = stringResource(R.string.group_select_members_hint),
+                    color = ChatStitchTokens.TextMuted,
+                    fontSize = 13.sp
+                )
+                Text(
+                    text = "Đã chọn: ${uiState.selectedMemberIds.size}",
+                    color = ChatStitchTokens.BrandBlue,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                if (uiState.availableContacts.isEmpty()) {
+                    item {
+                        Text(
+                            text = stringResource(R.string.group_no_contacts),
+                            color = ChatStitchTokens.TextMuted,
+                            fontSize = 14.sp,
+                            modifier = Modifier.padding(vertical = 16.dp)
+                        )
+                    }
+                }
+                items(uiState.availableContacts, key = { it.userId }) { contact ->
+                    val checked = contact.userId in uiState.selectedMemberIds
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !uiState.isSubmitting) { onToggleMember(contact.userId) }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = checked,
+                            enabled = !uiState.isSubmitting,
+                            onCheckedChange = { onToggleMember(contact.userId) }
+                        )
+                        Text(
+                            text = contact.displayName,
+                            color = ChatStitchTokens.TextPrimary,
+                            modifier = Modifier.padding(start = 8.dp)
+                        )
+                    }
+                }
+            }
+            if (!uiState.errorMessage.isNullOrBlank()) {
+                Surface(
+                    color = ChatStitchTokens.AlertRed.copy(alpha = 0.1f),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 10.dp)
+                ) {
+                    Text(
+                        text = uiState.errorMessage,
+                        color = ChatStitchTokens.AlertRed,
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
+                }
+            }
+            Button(
+                onClick = onSubmitClick,
+                enabled = uiState.canCreateGroup,
+                colors = ButtonDefaults.buttonColors(containerColor = ChatStitchTokens.BrandBlue),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (uiState.isSubmitting) {
+                    CircularProgressIndicator(
+                        color = Color.White,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+                Text(stringResource(R.string.group_create_action))
+            }
+        }
+    }
+}

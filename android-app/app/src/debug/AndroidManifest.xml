@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name=".feature.media.debug.MediaDebugActivity"
+            android:exported="true"
+            android:label="@string/media_debug_activity_label"
+            android:theme="@style/Theme.AndroidChat">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name=".feature.media.debug.VoiceDebugActivity"
+            android:exported="true"
+            android:label="Voice message debug"
+            android:theme="@style/Theme.AndroidChat" />
+        <activity
+            android:name=".feature.media.debug.BatchMediaDebugActivity"
+            android:exported="true"
+            android:label="Batch media debug"
+            android:theme="@style/Theme.AndroidChat" />
+    </application>
+</manifest>
