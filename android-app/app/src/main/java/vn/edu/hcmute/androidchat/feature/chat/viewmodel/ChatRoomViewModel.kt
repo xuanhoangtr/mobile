@@ -14,6 +14,7 @@ import vn.edu.hcmute.androidchat.feature.chat.data.ChatApiService
 import vn.edu.hcmute.androidchat.feature.chat.data.ChatLocalCache
 import vn.edu.hcmute.androidchat.feature.chat.data.ChatRealtimeTransport
 import vn.edu.hcmute.androidchat.feature.chat.data.ChatServerEvent
+import vn.edu.hcmute.androidchat.feature.chat.model.ChatMessageFormatter
 import vn.edu.hcmute.androidchat.feature.chat.model.ChatRoomUiState
 import vn.edu.hcmute.androidchat.feature.chat.model.MessageDeliveryStatus
 import vn.edu.hcmute.androidchat.feature.chat.model.MessageType
@@ -315,12 +316,11 @@ class ChatRoomViewModel(
         createdAtLabel: String,
         isTransportConnected: Boolean = false
     ): MessageUiModel? {
-        val totalSeconds = (durationMs / 1_000L).coerceAtLeast(1L)
-        val durationLabel = "%d:%02d".format(totalSeconds / 60L, totalSeconds % 60L)
+        val durationLabel = ChatMessageFormatter.formatDurationShort(durationMs.coerceAtLeast(1_000L))
         val metaJson = JSONObject().put("durationMs", durationMs).toString()
         return enqueueOutgoingMessage(
             currentUserId = currentUserId,
-            content = "Tin nhắn thoại ($durationLabel) [media:$mediaId]",
+            content = "Tin nhắn thoại ($durationLabel)",
             type = MessageType.VOICE,
             createdAtLabel = createdAtLabel,
             isTransportConnected = isTransportConnected,

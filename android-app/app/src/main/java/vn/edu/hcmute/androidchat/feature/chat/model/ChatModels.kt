@@ -111,3 +111,39 @@ data class ChatRoomUiState(
     val errorMessage: String? = null,
     val memberNamesByUserId: Map<Long, String> = emptyMap()
 )
+
+object ChatMessageFormatter {
+    private val MEDIA_TAG_REGEX = Regex("""\s*\[media:\d+\]""")
+    private val HASH_MEDIA_TAG_REGEX = Regex("""\s*#\d+""")
+    private val VOICE_LEGACY_MMSS_REGEX = Regex("""^(Tin nhắn thoại\s*)\(0:(\d{2})\)(.*)$""")
+
+    /** Formats duration in seconds (e.g. "2s") under one minute, or "m:ss" for 60s+. */
+    fun formatDurationShort(durationMs: Long): String {
+        val totalSeconds = (durationMs / 1_000L).coerceAtLeast(0L)
+        return if (totalSeconds < 60L) {
+            "${totalSeconds}s"
+        } else {
+            "%d:%02d".format(totalSeconds / 60L, totalSeconds % 60L)
+        }
+    }
+
+    /** Strips internal media reference markers and normalizes legacy voice "0:XX" durations. */
+    fun sanitizePreview(content: String?): String {
+        val cleaned = content
+            .orEmpty()
+            .replace(MEDIA_TAG_REGEX, "")
+            .trim()
+        val withoutVoiceHash = if (cleaned.startsWith("Tin nhắn thoại")) {
+            cleaned.replace(HASH_MEDIA_TAG_REGEX, "").trim()
+        } else {
+            cleaned
+        }
+        val legacyMatch = VOICE_LEGACY_MMSS_REGEX.matchEntire(withoutVoiceHash)
+        return if (legacyMatch != null) {
+            val seconds = legacyMatch.groupValues[2].toLongOrNull() ?: 0L
+            "${legacyMatch.groupValues[1]}(${seconds}s)${legacyMatch.groupValues[3]}".trim()
+        } else {
+            withoutVoiceHash
+        }
+    }
+}

@@ -12,6 +12,7 @@ import vn.edu.hcmute.androidchat.feature.chat.data.ChatLocalCache
 import vn.edu.hcmute.androidchat.feature.chat.data.ChatRealtimeTransport
 import vn.edu.hcmute.androidchat.feature.chat.data.ChatServerEvent
 import vn.edu.hcmute.androidchat.feature.chat.model.ChatListUiState
+import vn.edu.hcmute.androidchat.feature.chat.model.ChatMessageFormatter
 import vn.edu.hcmute.androidchat.feature.chat.model.ConversationType
 import vn.edu.hcmute.androidchat.feature.chat.model.ConversationUiModel
 import vn.edu.hcmute.androidchat.feature.chat.model.MessageDeliveryStatus
@@ -277,7 +278,7 @@ class ChatListViewModel(
                         conversations = state.conversations.map { item ->
                             if (item.id == event.conversationId) {
                                 item.copy(
-                                    lastMessagePreview = event.content,
+                                    lastMessagePreview = ChatMessageFormatter.sanitizePreview(event.content),
                                     lastMessageTime = event.createdAt,
                                     unreadCount = if (shouldIncrementUnread) item.unreadCount + 1 else item.unreadCount
                                 )
@@ -351,7 +352,7 @@ class ChatListViewModel(
             val updated = state.conversations.map { item ->
                 if (item.id == conversationId) {
                     changed = true
-                    item.copy(lastMessagePreview = preview)
+                    item.copy(lastMessagePreview = ChatMessageFormatter.sanitizePreview(preview))
                 } else {
                     item
                 }

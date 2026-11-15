@@ -8,6 +8,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import vn.edu.hcmute.androidchat.feature.chat.model.ChatMessageFormatter
 import vn.edu.hcmute.androidchat.feature.chat.model.ConversationType
 import vn.edu.hcmute.androidchat.feature.chat.model.ConversationUiModel
 import vn.edu.hcmute.androidchat.feature.chat.model.MessageDeliveryStatus
@@ -177,7 +178,10 @@ object ChatRestParser {
             ConversationType.DIRECT
         }
         val lastMessageObj = obj.optJSONObject("lastMessage")
-        val lastPreview = lastMessageObj?.optString("content")?.takeIf { it.isNotBlank() && it != "null" }
+        val lastPreview = lastMessageObj?.optString("content")
+            ?.takeIf { it.isNotBlank() && it != "null" }
+            ?.let(ChatMessageFormatter::sanitizePreview)
+            ?.takeIf { it.isNotBlank() }
         val lastTime = lastMessageObj?.optString("createdAt")?.takeIf { it.isNotBlank() && it != "null" }
             ?: obj.optString("updatedAt").takeIf { it.isNotBlank() && it != "null" }
         val id = obj.getLong("id")

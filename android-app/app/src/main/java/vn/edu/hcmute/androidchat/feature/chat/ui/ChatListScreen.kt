@@ -67,6 +67,7 @@ import androidx.compose.ui.unit.sp
 import vn.edu.hcmute.androidchat.R
 import vn.edu.hcmute.androidchat.feature.auth.ui.UserAvatar
 import vn.edu.hcmute.androidchat.feature.chat.model.ChatListUiState
+import vn.edu.hcmute.androidchat.feature.chat.model.ChatMessageFormatter
 import vn.edu.hcmute.androidchat.feature.chat.model.ConversationType
 import vn.edu.hcmute.androidchat.feature.chat.model.ConversationUiModel
 import vn.edu.hcmute.androidchat.feature.chat.model.MessageUiModel
@@ -528,7 +529,7 @@ private fun ConversationRow(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = conversation.lastMessagePreview.orEmpty(),
+                        text = ChatMessageFormatter.sanitizePreview(conversation.lastMessagePreview),
                         color = ChatStitchTokens.TextSecondary,
                         fontSize = 14.sp,
                         maxLines = 1,
@@ -632,7 +633,7 @@ private fun GlobalSearchMessageRow(
             }
             Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = if (message.isRecalled) "Tin nhắn đã được thu hồi" else message.content,
+                text = if (message.isRecalled) "Tin nhắn đã được thu hồi" else ChatMessageFormatter.sanitizePreview(message.content),
                 color = ChatStitchTokens.TextPrimary,
                 fontSize = 14.sp,
                 maxLines = 2,

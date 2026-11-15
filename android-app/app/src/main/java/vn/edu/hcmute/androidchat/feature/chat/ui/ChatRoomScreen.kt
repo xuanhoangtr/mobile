@@ -107,6 +107,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import vn.edu.hcmute.androidchat.R
+import vn.edu.hcmute.androidchat.feature.chat.model.ChatMessageFormatter
 import vn.edu.hcmute.androidchat.feature.chat.model.ChatRoomUiState
 import vn.edu.hcmute.androidchat.feature.chat.model.ConversationUiModel
 import vn.edu.hcmute.androidchat.feature.chat.model.MessageDeliveryStatus
@@ -390,7 +391,7 @@ fun ChatRoomScreen(
                     } else if (replyingMsg != null) {
                         ComposerContextBanner(
                             title = "Đang trả lời",
-                            preview = if (replyingMsg.isRecalled) "Tin nhắn đã được thu hồi" else replyingMsg.content,
+                            preview = if (replyingMsg.isRecalled) "Tin nhắn đã được thu hồi" else ChatMessageFormatter.sanitizePreview(replyingMsg.content),
                             onCancel = onCancelReply
                         )
                     }
@@ -790,7 +791,7 @@ private fun PinnedMessagesBanner(
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     val topPinnedId = pinnedIds.first()
-    val previewText = messages.firstOrNull { it.serverId == topPinnedId }?.content
+    val previewText = messages.firstOrNull { it.serverId == topPinnedId }?.content?.let(ChatMessageFormatter::sanitizePreview)
         ?.takeIf { it.isNotBlank() }
         ?: "Tin nhắn #$topPinnedId"
 
@@ -1092,7 +1093,7 @@ private fun MessageBubble(
                         val quotedPreview = when {
                             replyTargetMessage == null -> "Tin nhắn gốc #${message.replyToId}"
                             replyTargetMessage.isRecalled -> "Tin nhắn đã được thu hồi"
-                            else -> replyTargetMessage.content
+                            else -> ChatMessageFormatter.sanitizePreview(replyTargetMessage.content)
                         }
                         Surface(
                             color = if (isMine) Color.White.copy(alpha = 0.16f) else ChatStitchTokens.SoftBlueContainer,
@@ -1952,10 +1953,8 @@ private fun VoiceComposerBar(
     }
 }
 
-private fun formatVoiceDuration(durationMs: Long): String {
-    val totalSeconds = durationMs / 1_000L
-    return "%d:%02d".format(totalSeconds / 60L, totalSeconds % 60L)
-}
+private fun formatVoiceDuration(durationMs: Long): String =
+    ChatMessageFormatter.formatDurationShort(durationMs)
 
 internal fun extractVoiceMediaId(content: String): Long? {
     val match = Regex("""(?:\[media:|#)(\d+)\]?""").find(content) ?: return null
@@ -1963,6 +1962,10 @@ internal fun extractVoiceMediaId(content: String): Long? {
 }
 
 private fun extractVoiceDurationMs(content: String): Long {
+    Regex("""\((\d+)s\)""").find(content)?.let { secMatch ->
+        val seconds = secMatch.groupValues[1].toLongOrNull() ?: return 0L
+        return seconds * 1_000L
+    }
     val match = Regex("""\((\d+):(\d{2})\)""").find(content) ?: return 0L
     val minutes = match.groupValues[1].toLongOrNull() ?: return 0L
     val seconds = match.groupValues[2].toLongOrNull() ?: return 0L
@@ -1970,10 +1973,7 @@ private fun extractVoiceDurationMs(content: String): Long {
 }
 
 private fun formatVoiceBubbleText(content: String): String =
-    content
-        .replace(Regex("""\s*\[media:\d+\]"""), "")
-        .replace(Regex("""\s*#\d+"""), "")
-        .trim()
+    ChatMessageFormatter.sanitizePreview(content)
 
 @Preview(showBackground = true)
 @Composable

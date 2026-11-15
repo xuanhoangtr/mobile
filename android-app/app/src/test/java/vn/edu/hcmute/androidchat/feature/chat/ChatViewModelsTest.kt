@@ -23,6 +23,7 @@ import vn.edu.hcmute.androidchat.feature.chat.data.ChatLocalCache
 import vn.edu.hcmute.androidchat.feature.chat.data.ChatRealtimeTransport
 import vn.edu.hcmute.androidchat.feature.chat.data.ChatServerEvent
 import vn.edu.hcmute.androidchat.feature.chat.data.CursorPageResult
+import vn.edu.hcmute.androidchat.feature.chat.model.ChatMessageFormatter
 import vn.edu.hcmute.androidchat.feature.chat.model.ConversationType
 import vn.edu.hcmute.androidchat.feature.chat.model.ConversationUiModel
 import vn.edu.hcmute.androidchat.feature.chat.model.MessageDeliveryStatus
@@ -780,6 +781,58 @@ class ChatViewModelsTest {
         assertEquals(1, vm.uiState.value.searchMessageResults.size)
         vm.onSearchQueryChanged("")
         assertTrue(vm.uiState.value.searchMessageResults.isEmpty())
+    }
+
+    @Test
+    fun voiceMessageFormattingUsesSecondsUnderOneMinuteAndHidesMediaTag() = runTest {
+        assertEquals("2s", ChatMessageFormatter.formatDurationShort(2_000L))
+        assertEquals("59s", ChatMessageFormatter.formatDurationShort(59_000L))
+        assertEquals("1:05", ChatMessageFormatter.formatDurationShort(65_000L))
+        assertEquals(
+            "Tin nhắn thoại (2s)",
+            ChatMessageFormatter.sanitizePreview("Tin nhắn thoại (0:02) [media:8955789940]")
+        )
+        assertEquals("Hình ảnh", ChatMessageFormatter.sanitizePreview("Hình ảnh [media:42]"))
+
+        val fakeTransport = FakeChatRealtimeTransport()
+        val roomVm = ChatRoomViewModel(transport = fakeTransport)
+        roomVm.openConversation(conversationId = 3L, title = "Nhom Do An UTE")
+        val queued = roomVm.queueOutgoingVoiceMessage(
+            currentUserId = 1L,
+            mediaId = 8955789940L,
+            durationMs = 2_000L,
+            createdAtLabel = "10:05",
+            isTransportConnected = true
+        )
+        assertNotNull(queued)
+        assertEquals("Tin nhắn thoại (2s)", queued!!.content)
+        assertEquals(8955789940L, queued.mediaRef)
+        assertFalse(queued.content.contains("[media:"))
+
+        val listVm = ChatListViewModel(transport = fakeTransport, apiService = FakeChatApiService())
+        listVm.setConversations(
+            listOf(
+                ConversationUiModel(
+                    id = 3L,
+                    type = ConversationType.GROUP,
+                    title = "Nhom Do An UTE",
+                    lastMessagePreview = "Old",
+                    lastMessageTime = "10:00"
+                )
+            )
+        )
+        fakeTransport.eventsFlow.emit(
+            ChatServerEvent.MessageCreated(
+                id = 99L,
+                clientMessageId = "c-99",
+                conversationId = 3L,
+                senderId = 2L,
+                type = MessageType.VOICE,
+                content = "Tin nhắn thoại (0:02) [media:8955789940]",
+                createdAt = "2026-11-15T01:06:00Z"
+            )
+        )
+        assertEquals("Tin nhắn thoại (2s)", listVm.uiState.value.conversations.single().lastMessagePreview)
     }
 
     private class FakeChatRealtimeTransport : ChatRealtimeTransport {
