@@ -31,6 +31,8 @@ class ChatListViewModel(
 
     private var activeCurrentUserId: Long = 0L
     private var activeConversationId: Long? = null
+    private var lastBaseUrl: String? = null
+    private var lastAccessToken: String? = null
     private val peerPresenceByUserId = mutableMapOf<Long, Pair<Boolean, String?>>()
     private val sentDeliveredReceiptIds = mutableSetOf<Long>()
 
@@ -38,7 +40,15 @@ class ChatListViewModel(
         if (transport != null) {
             viewModelScope.launch {
                 transport.connectionState.collect { state ->
+                    val previous = _uiState.value.connectionState
                     onConnectionStateChanged(state)
+                    if (state == WsConnectionState.CONNECTED && previous != WsConnectionState.CONNECTED) {
+                        val baseUrl = lastBaseUrl
+                        val token = lastAccessToken
+                        if (!baseUrl.isNullOrBlank() && !token.isNullOrBlank()) {
+                            loadConversations(baseUrl, token)
+                        }
+                    }
                 }
             }
             viewModelScope.launch {
@@ -89,17 +99,20 @@ class ChatListViewModel(
     }
 
     fun loadConversations(baseUrl: String, accessToken: String) {
+        lastBaseUrl = baseUrl
+        lastAccessToken = accessToken
         viewModelScope.launch {
             val cached = runCatching { localCache?.getConversations().orEmpty() }.getOrDefault(emptyList())
             if (cached.isNotEmpty() && _uiState.value.conversations.isEmpty()) {
                 _uiState.update {
                     it.copy(
                         conversations = applyCachedPresence(cached),
-                        isLoading = apiService != null
+                        isLoading = apiService != null,
+                        errorMessage = null
                     )
                 }
             } else {
-                setLoading(apiService != null)
+                _uiState.update { it.copy(isLoading = apiService != null, errorMessage = null) }
             }
 
             val remote = apiService?.listConversations(baseUrl = baseUrl, accessToken = accessToken)
@@ -181,7 +194,12 @@ class ChatListViewModel(
     }
 
     fun onConnectionStateChanged(state: WsConnectionState) {
-        _uiState.update { it.copy(connectionState = state) }
+        _uiState.update {
+            it.copy(
+                connectionState = state,
+                errorMessage = if (state == WsConnectionState.CONNECTED) null else it.errorMessage
+            )
+        }
     }
 
     fun setConversations(conversations: List<ConversationUiModel>) {
@@ -318,7 +336,11 @@ class ChatListViewModel(
                 updateConversationPreview(event.conversationId, "Tin nhắn đã được thu hồi")
             }
 
-            is ChatServerEvent.Error -> setError(event.message)
+            is ChatServerEvent.Error -> {
+                if (event.code != "WS_CONNECTION_FAILED") {
+                    setError(event.message)
+                }
+            }
             else -> Unit
         }
     }

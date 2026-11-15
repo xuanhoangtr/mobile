@@ -276,7 +276,12 @@ class ChatRoomViewModel(
     }
 
     fun onConnectionStateChanged(state: WsConnectionState) {
-        _uiState.update { it.copy(connectionState = state) }
+        _uiState.update {
+            it.copy(
+                connectionState = state,
+                errorMessage = if (state == WsConnectionState.CONNECTED) null else it.errorMessage
+            )
+        }
     }
 
     /**
@@ -1031,7 +1036,9 @@ class ChatRoomViewModel(
             }
 
             is ChatServerEvent.Error -> {
-                _uiState.update { it.copy(errorMessage = event.message) }
+                if (event.code != "WS_CONNECTION_FAILED") {
+                    _uiState.update { it.copy(errorMessage = event.message) }
+                }
             }
 
             is ChatServerEvent.CallSignal -> Unit

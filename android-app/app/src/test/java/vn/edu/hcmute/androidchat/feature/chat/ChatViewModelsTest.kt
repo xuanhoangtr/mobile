@@ -389,6 +389,39 @@ class ChatViewModelsTest {
     }
 
     @Test
+    fun transientWsConnectionFailureDoesNotClearListAndConnectedClearsErrors() = runTest {
+        val transport = FakeChatRealtimeTransport()
+        val fakeApi = FakeChatApiService()
+        val listVm = ChatListViewModel(transport = transport, apiService = fakeApi)
+        val roomVm = ChatRoomViewModel(transport = transport, apiService = fakeApi)
+
+        listVm.loadConversations("http://localhost:8080", "tok")
+        assertEquals(1, listVm.uiState.value.conversations.size)
+
+        // Simulate transient HTTP 502 handshake failure during server restart
+        transport.connectionStateFlow.value = WsConnectionState.RECONNECTING
+        transport.eventsFlow.emit(
+            ChatServerEvent.Error(
+                requestId = null,
+                code = "WS_CONNECTION_FAILED",
+                message = "Expected HTTP 101 response but was '502 Bad Gateway'"
+            )
+        )
+        assertNull(listVm.uiState.value.errorMessage)
+        assertNull(roomVm.uiState.value.errorMessage)
+        assertEquals(1, listVm.uiState.value.conversations.size)
+
+        // Any explicit non-transient error clears as soon as WebSocket reconnects
+        transport.eventsFlow.emit(ChatServerEvent.Error(null, "SERVER_ERR", "Tmp"))
+        assertEquals("Tmp", listVm.uiState.value.errorMessage)
+        assertEquals("Tmp", roomVm.uiState.value.errorMessage)
+
+        transport.connectionStateFlow.value = WsConnectionState.CONNECTED
+        assertNull(listVm.uiState.value.errorMessage)
+        assertNull(roomVm.uiState.value.errorMessage)
+    }
+
+    @Test
     fun chatRoomViewModelPreservesScrollPositionCancelsFailedAndOrdersMessages() = runTest {
         val fakeApi = FakeChatApiService()
         val vm = ChatRoomViewModel(apiService = fakeApi)

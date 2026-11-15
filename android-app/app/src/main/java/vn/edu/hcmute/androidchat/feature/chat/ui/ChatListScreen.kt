@@ -306,8 +306,26 @@ fun ChatListScreen(
                 }
             }
 
+            val hasListContent = displayedConversations.isNotEmpty() || searchMessageResults.isNotEmpty()
+            if (uiState.errorMessage != null && hasListContent) {
+                Surface(
+                    color = ChatStitchTokens.AlertRed.copy(alpha = 0.1f),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = uiState.errorMessage,
+                        color = ChatStitchTokens.AlertRed,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
+                }
+            }
+
             when {
-                uiState.isLoading -> {
+                uiState.isLoading && !hasListContent -> {
                     Box(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
@@ -316,7 +334,7 @@ fun ChatListScreen(
                     }
                 }
 
-                uiState.errorMessage != null -> {
+                uiState.errorMessage != null && !hasListContent -> {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
