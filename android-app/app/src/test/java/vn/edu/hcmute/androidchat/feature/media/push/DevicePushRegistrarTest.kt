@@ -39,6 +39,40 @@ class DevicePushRegistrarTest {
         assertEquals(listOf(first.deviceId), unregistered)
     }
 
+    @Test
+    fun registrarPrefersRealFcmTokenAndUpdatesOnRefresh() = runTest {
+        val prefs = InMemorySharedPreferences()
+        val registered = mutableListOf<Triple<String, String, Boolean>>()
+        val client = object : PushTokenClient {
+            override suspend fun register(deviceId: String, token: String, enabled: Boolean) {
+                registered.add(Triple(deviceId, token, enabled))
+            }
+
+            override suspend fun unregister(deviceId: String) = Unit
+        }
+
+        val registrar = DevicePushRegistrar.createForTest(
+            prefs = prefs,
+            fcmTokenProvider = { "fcm-live-token-001" },
+            pushClientFactory = { client }
+        )
+
+        val firstToken = registrar.register(enabled = true)
+        assertEquals("fcm-live-token-001", firstToken)
+        assertEquals("fcm-live-token-001", registrar.currentToken())
+
+        val refreshedToken = registrar.registerToken("fcm-live-token-002", enabled = true)
+        assertEquals("fcm-live-token-002", refreshedToken)
+        assertEquals("fcm-live-token-002", registrar.currentToken())
+        assertEquals(
+            listOf(
+                Triple(registrar.deviceId, "fcm-live-token-001", true),
+                Triple(registrar.deviceId, "fcm-live-token-002", true)
+            ),
+            registered
+        )
+    }
+
     private class InMemorySharedPreferences : SharedPreferences {
         private val map = linkedMapOf<String, Any?>()
 
